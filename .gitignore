@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- rag-play: sensitive financial data (never commit) ---
+data/
+eval/questions.jsonl
+eval/runs/
+notes/private/
+*.pdf
+!tests/fixtures/**/*.pdf
+cc_statements/

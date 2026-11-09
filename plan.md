@@ -1,14 +1,68 @@
-# RAG Learning Plan — Local Ollama + ChromaDB
+# RAG Learning Plan — Credit Card Statement Analyst (Local Ollama)
 
 ## Goal
-Build a Retrieval-Augmented Generation (RAG) system over **my own documents (md / pdf / txt)**,
-answered by **local Ollama models**, to learn RAG solution design and the main design patterns.
+Build a local system that stores my **credit card statements (text PDFs)** and lets a **local Ollama
+LLM** answer questions about them:
+- **Spending totals & trends** — "How much did I spend on dining in Q2?", "Which month was highest?"
+- **Find transactions** — "When did I last pay Netflix?", "Show coffee shop charges in March"
+- **Anomalies & subscriptions** — recurring charges, price increases, duplicates, unusual spend
 
-Approach: **build each piece from scratch first**, then **rebuild with a framework (LlamaIndex)**
-and compare. Interface is a **CLI**. Vector store is **ChromaDB** (embedded, no server).
+Scope: 1–2 cards, about 1 year of statements (a few dozen PDFs).
 
-Each phase introduces one concept, ends with a working checkpoint, and records what was learned
-in `notes/phase-N.md`. Don't move on until the checkpoint works and you can explain why.
+This is mainly a learning exercise in RAG design. Approach: **build each piece from scratch first**,
+then **rebuild with a framework (LlamaIndex)** and compare. The interface is a **CLI**.
+
+---
+
+## The key design insight: this is not plain RAG
+Plain RAG retrieves the top-k chunks that look similar to the question and has the LLM read them.
+That works for "what does the document say?" questions, but **fails for most money questions**:
+
+| Question type | Plain RAG | What works |
+|---|---|---|
+| "Total dining spend in Q2" | Gets ~5 chunks, misses most transactions, LLM adds badly | **SQL `SUM` over a transactions table** |
+| "Month with highest spend" | Can't see all months at once | **SQL `GROUP BY`** |
+| "Coffee shop charges" | Works OK (semantic match on merchant names) | **Vector search** (pgvector) over transactions, or SQL after categorising |
+| "Netflix price increases" | Unreliable | **Code/SQL** comparing amounts over time |
+
+So the architecture is a **hybrid**, which is the main pattern to learn here:
+
+```
+             ┌──────────── INGEST (deterministic) ────────────┐
+PDF ──► text extraction ──► transaction parser ──► validate vs statement totals
+                                     │
+                                     ▼
+            ┌──────── Remote PostgreSQL 17 (LAN, TLS) ────────┐
+            │ relational: statements, transactions, categories│
+            │ pgvector:   transaction + merchant embeddings   │
+            │ full-text:  tsvector + pg_trgm on merchants     │
+            └─────────────────────────────────────────────────┘
+                                     ▲
+             ┌───────────────── QUERY (LLM agent) ────────────┐
+Question ──► qwen3:8b with tools: run_sql | search_transactions | detect_recurring
+             ──► answer with exact numbers + the transactions it used
+```
+
+Rule: **the LLM never does arithmetic.** It writes SQL or calls tools; the database computes numbers.
+
+One Postgres database holds both the structured data and the vectors. Semantic search, metadata
+filters and SQL aggregation can therefore run in **one query** (e.g. `WHERE txn_date >= ... ORDER BY
+embedding <=> $1`), with no syncing between two stores.
+
+---
+
+## Privacy and data handling (decide before any data touches the repo)
+Statements are sensitive financial data. Models run locally (Ollama); the data is stored in a
+**PostgreSQL server on the home LAN**, so it leaves the laptop but not the network.
+- `cc_statements/` (real PDFs) and `data/` are **gitignored from Phase 0**, as are `*.pdf` in general.
+- DB connection details live in `.env` (`DB_HOST`, `DB`, `DB_USER`, `DB_PASSWORD`), which is gitignored. Load with `python-dotenv`; never log the connection string.
+- Connect with `sslmode=require` (the server supports TLS 1.3). Don't expose the DB port outside the LAN.
+- Never commit statements, extracted text, DB dumps, eval answers or logs with real transactions.
+- **Mask card numbers** during ingest (keep last 4 digits only); drop name and address lines.
+- Two roles: `rag_user` (owner; ingest and schema changes) and **`rag_reader`** (read-only: `SELECT` only on the app tables). The SQL tool connects as `rag_reader`, with `default_transaction_read_only = on` and a `statement_timeout`, so a bad or hostile generated query can't change data or hang the server. (Created 2026-11-08: role settings `statement_timeout = 5s`, `search_path = ragplay, public`; `SELECT` on current and future `ragplay` tables via default privileges. Credentials in `.env` as `DB_READER_USER` / `DB_READER_PASSWORD`.)
+- Treat statement text as untrusted input (merchant descriptions end up in prompts).
+- Eval questions (`eval/questions.jsonl`) contain real amounts, so keep them gitignored too. Commit only a **synthetic sample** for tests.
+- Use a **synthetic statement generator** (`scripts/make_fake_statements.py`) for development, tests and anything shared.
 
 ---
 
@@ -16,19 +70,19 @@ in `notes/phase-N.md`. Don't move on until the checkpoint works and you can expl
 | Item | Value |
 |---|---|
 | Machine | Apple M3, 16 GB RAM |
-| Ollama | installed; `qwen3:8b` present (chat model) |
-| Python | 3.14 system — **use 3.12 in the venv** (ChromaDB/torch wheels lag new Pythons) |
+| Ollama | `qwen3:8b` (chat + tool calling), `qwen3-vl:8b-instruct` (vision, if a PDF won't parse) |
+| Python | 3.14 system; **use 3.12 in the venv** (some ML/LlamaIndex wheels lag new Pythons) |
 | Package mgr | `uv` |
-
-16 GB means: one 8B chat model + one embedding model loaded at once is fine; avoid >14B models.
+| Database | Remote PostgreSQL 17.11 on the LAN (`db01`), TLS 1.3; `rag_user` owns the database. Extensions `vector` 0.8.7 and `pg_trgm` 1.6 enabled (in `public`). Schema `ragplay` created. `pg_hba` allows only the LAN (scram-sha-256) |
+| DB client | `psql` (Homebrew libpq) |
 
 ### Models to pull
 | Role | Model | Why |
 |---|---|---|
-| Chat / generation | `qwen3:8b` (have it) | Good quality at 8B; supports thinking mode |
-| Embeddings (primary) | `nomic-embed-text` | Small, fast, 8k context, the common baseline |
-| Embeddings (compare) | `mxbai-embed-large` or `qwen3-embedding` | For the embedding-comparison exercise |
-| Small chat (compare) | `llama3.2:3b` | Shows how much model size matters vs. retrieval quality |
+| Chat / tool calling / SQL | `qwen3:8b` (have it) | Good tool calling and text-to-SQL at 8B |
+| Embeddings | `nomic-embed-text` | Small, fast baseline |
+| Embeddings (compare) | `qwen3-embedding` or `mxbai-embed-large` | Embedding comparison exercise |
+| Small chat (compare) | `llama3.2:3b` | Shows how model size affects SQL and tool-use accuracy |
 
 ---
 
@@ -36,134 +90,167 @@ in `notes/phase-N.md`. Don't move on until the checkpoint works and you can expl
 ```
 rag-play/
   plan.md
-  pyproject.toml          # uv-managed, python 3.12
-  data/raw/               # your md/pdf/txt (gitignored if private)
-  data/chroma/            # persisted vector DB (gitignored)
-  eval/questions.jsonl    # hand-written Q&A + expected source docs
+  pyproject.toml              # uv-managed, python 3.12
+  .env                        # GITIGNORED: DB connection details
+  cc_statements/              # GITIGNORED: real statement PDFs (Visa ...2423, Apr 2025 – Oct 2026)
+  data/                       # GITIGNORED: data/fake/ synthetic statements + ground-truth JSON
+  sql/                        # schema migrations (001_schema.sql, 002_roles.sql, ...)
+  eval/questions.sample.jsonl # synthetic eval set (committed)
+  eval/questions.jsonl        # real eval set (gitignored)
+  scripts/make_fake_statements.py
   src/ragplay/
-    loaders.py            # file -> text + metadata
-    chunking.py           # text -> chunks
-    embeddings.py         # ollama embed wrapper
-    store.py              # ChromaDB wrapper
-    retrieve.py           # retrieval strategies
-    generate.py           # prompt building + ollama chat
-    pipeline.py           # wires it together
-    cli.py                # `rag ingest`, `rag ask`, `rag eval`
-  src/ragplay_llamaindex/ # framework rebuild (Phase 8)
-  notes/                  # per-phase learning notes
+    extract.py                # PDF -> text/words with positions (pdfplumber)
+    parsers/                  # one parser per issuer layout -> Transaction rows
+    validate.py               # reconcile parsed rows vs statement summary totals
+    db.py                     # psycopg connections from .env (owner + read-only), migrations
+    categorize.py             # merchant normalisation + LLM categorisation (cached)
+    embeddings.py / store.py  # Ollama embeddings + pgvector
+    tools.py                  # run_sql, search_transactions, detect_recurring, ...
+    agent.py                  # tool-calling loop
+    cli.py                    # rag ingest | ask | chat | eval
+  src/ragplay_llamaindex/     # framework rebuild
+  notes/                      # per-phase learning notes
 ```
+
+### Data model (PostgreSQL, schema `ragplay`)
+```
+statements(id, card_last4, issuer, period_start date, period_end date, closing_balance numeric(12,2),
+           total_purchases, total_payments, total_fees, total_interest numeric(12,2),
+           source_file, file_hash text UNIQUE)
+transactions(id, statement_id, txn_date date, post_date date, description_raw, merchant,
+             amount numeric(12,2), type /* purchase|payment|refund|fee|interest */, category, card_last4,
+             search_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', merchant || ' ' || description_raw)) STORED)
+merchant_categories(merchant PRIMARY KEY, category, source /* rule|llm|manual */)
+transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY (transaction_id, model))
+```
+- Money is `numeric(12,2)`, never float, so sums are exact to the cent.
+- Embeddings are keyed by `model` so several embedding models can be compared side by side (Phase 4).
+  A few thousand rows is small enough for exact (sequential) search; add an HNSW index per model
+  (on `embedding::vector(768)` with `WHERE model = ...`) only as an indexing exercise.
+- Indexes: `transactions(txn_date)`, `(category)`, GIN on `search_tsv`, GIN `gin_trgm_ops` on `merchant`.
+- A separate schema `ragplay_test` holds synthetic data for tests and the sample eval, so tests never touch real data.
 
 ---
 
-## Phase 0 — Setup and a baseline without RAG
-**Concept:** Why RAG exists. See what the LLM does *without* your data.
-- `uv init`, `uv venv --python 3.12`, activate, then `uv add ollama chromadb pypdf typer rich`.
+## Phase 0 — Setup, privacy guardrails, baseline
+**Concept:** Why grounding is needed. Safe handling of data.
+- `uv init`, `uv venv --python 3.12`, activate, `uv add ollama "psycopg[binary]" pgvector python-dotenv pdfplumber typer rich`.
+- Add `data/`, `.env` and `eval/questions.jsonl` to `.gitignore` **before** copying statements in.
 - `ollama pull nomic-embed-text`.
-- Script: ask `qwen3:8b` 5 questions only answerable from your docs. Record the answers (expect hallucination or "I don't know").
-- **Checkpoint:** baseline answers saved — this is what RAG must beat.
+- Database: extensions, `ragplay` schema and `rag_reader` role are already set up (2026-11-08). Run `sql/001_schema.sql` as `rag_user` and check `rag db check` connects as both roles over TLS.
+- Baseline: paste one statement's text into `qwen3:8b` and ask "total spent on groceries?". Check against a hand calculation. Expect arithmetic and omission errors. This is why the LLM won't do maths.
+- **Checkpoint:** guardrails in place; baseline errors recorded.
+- ✅ **Done 2026-11-08.** `rag db migrate` / `rag db check`, synthetic generator (`data/fake/`), 14 tests passing. Baseline: **qwen3:8b got 2/5 exact**, with errors up to +$327 and 2–9 min per question → [notes/phase0-baseline.md](notes/phase0-baseline.md).
 
 ## Phase 1 — Embeddings and similarity, by hand
-**Concept:** Text → vector; meaning ≈ geometry.
-- Call `ollama.embed()` on a handful of sentences; compute cosine similarity with numpy.
-- Experiment: paraphrases vs. unrelated sentences vs. keyword-overlap-but-different-meaning.
-- Brute-force search: embed 20 paragraphs, find top-k for a query with no vector DB.
-- **Checkpoint:** you can explain why "car" and "automobile" are close, and where embeddings fail (exact IDs, numbers, negation).
+**Concept:** Text → vector; where semantic search helps and where it fails.
+- Embed merchant strings (`"SQ *BLUE BOTTLE COF"`, `"STARBUCKS #1234"`, `"SHELL OIL 5739"`) and compute cosine similarity with numpy.
+- See that "coffee" lands near coffee shops, but embeddings can't tell $4 from $400, or March from May.
+- **Checkpoint:** you can explain which questions need vectors and which need SQL.
 
-## Phase 2 — Ingestion pipeline (loading + chunking)
-**Concept:** Retrieval quality is mostly decided at ingest time.
-- Loaders: `.md`/`.txt` direct; `.pdf` via `pypdf` (keep page numbers in metadata).
-- Metadata per chunk: `source`, `page`, `heading`, `chunk_index`, `doc_hash`.
-- Implement and compare chunking strategies:
-  1. Fixed size (e.g. 500 tokens) with overlap (e.g. 50)
-  2. Recursive / separator-aware (paragraph → sentence → word)
-  3. Markdown-heading-aware (chunk per section, heading kept as context)
-- **Checkpoint:** `rag ingest data/raw` prints chunk counts and sample chunks per strategy.
+## Phase 2 — Ingestion: PDF → structured transactions
+**Concept:** Structured extraction is the most important (and least glamorous) part of the pipeline.
+- Extract text with positions using `pdfplumber`. Look at the raw output of each issuer's layout.
+- Write a **deterministic parser** per issuer (regex/column positions) → `Transaction` rows. Handle multi-line descriptions, credits shown as negatives or `CR`, and year rollover in Dec/Jan statements.
+- **LLM-extraction comparison:** have `qwen3:8b` extract the same page using **structured output** (JSON schema via Ollama `format=`). Compare its accuracy with the regex parser. This shows when to use an LLM for extraction and when not to.
+- Fallback for pages that won't parse: `qwen3-vl` on a page image.
+- **Validation:** sum parsed purchases, payments and fees, and reconcile against the statement's summary box. Ingest fails loudly if they don't match.
+- Idempotent ingest keyed on `file_hash` (`UNIQUE` constraint); each statement loads in **one transaction**, so a failed reconcile leaves nothing behind.
+- **Checkpoint:** `rag ingest cc_statements` loads all statements; every statement reconciles to the cent.
 
-## Phase 3 — Vector store (ChromaDB)
-**Concept:** Indexing, persistence, metadata filtering, idempotent ingest.
-- Persistent client at `data/chroma/`; one collection per (chunking strategy × embedding model) so they can be compared.
-- Supply your own embeddings (from Ollama) rather than Chroma's default, so you control the model.
-- Idempotency: skip unchanged files using `doc_hash`; delete + re-add changed ones.
-- Try metadata filters (`where={"source": ...}`).
-- **Checkpoint:** re-running ingest is a no-op; queries return top-k chunks with sources.
+## Phase 3 — Enrichment: merchant normalisation and categories
+**Concept:** LLM as a classifier; caching; humans in the loop.
+- Normalise merchants (`"SQ *BLUE BOTTLE COF 0423"` → `Blue Bottle Coffee`) with rules first, then the LLM for the rest.
+- Categorise each **unique merchant** once (dining, groceries, travel, subscriptions, ...) with an LLM using a fixed category list and structured output. Cache in `merchant_categories`.
+- `rag categories review` lets you correct categories by hand (`source=manual` always wins).
+- **Checkpoint:** every transaction has a category; you've spot-checked about 50.
 
-## Phase 4 — Naive RAG end to end (the core pattern)
-**Concept:** Retrieve → augment prompt → generate.
-- Prompt template: system instructions + numbered context chunks + question; require citations like `[1]` and "say you don't know if the context doesn't contain it".
-- `rag ask "question"` prints answer + cited sources; `--show-context` flag prints retrieved chunks.
-- Re-run the Phase 0 questions and compare.
-- Things to observe: context window limits, top-k tradeoff, "lost in the middle", the model ignoring the context.
-- **Checkpoint:** grounded, cited answers to the baseline questions.
+## Phase 4 — Vector search with pgvector
+**Concept:** Dense retrieval with metadata filtering, in the same database as the facts.
+- Embed one text per transaction, e.g. `"Blue Bottle Coffee dining SQ *BLUE BOTTLE COF"`, into `transaction_embeddings`. Date, amount and category stay as real columns, not text in the embedding.
+- `search_transactions(query, date_from, date_to, min_amount)` is one SQL query: ordinary `WHERE` filters plus `ORDER BY embedding <=> :query_vec LIMIT k` (cosine distance).
+- **Hybrid search** for exact merchant names: rank by full-text (`ts_rank` on `search_tsv`) and trigram similarity (`pg_trgm`) as well as vectors, and merge with **Reciprocal Rank Fusion** in a single SQL query with CTEs.
+- Compare embedding models (`nomic-embed-text` vs `qwen3-embedding`/`mxbai-embed-large`) by storing both and switching `model` in the query.
+- Optional: build an HNSW index and use `EXPLAIN ANALYZE` to compare exact and approximate search.
+- **Checkpoint:** "coffee in March" and "hardware store purchases" return the right transactions.
 
-## Phase 5 — Evaluation (do this before optimising)
-**Concept:** You can't improve what you don't measure.
-- Write `eval/questions.jsonl`: 20–30 questions with expected answer and expected source file(s). Include some unanswerable ones.
-- Retrieval metrics: **hit rate@k**, **MRR** (did the right source come back, how high).
-- Generation metrics: **faithfulness** (answer supported by context?) and **correctness**, scored with LLM-as-judge using `qwen3:8b` plus manual spot checks.
-- `rag eval --collection X` prints a results table; store results per run in `eval/runs/`.
-- **Checkpoint:** baseline scores for naive RAG. Every later phase is judged against these.
+## Phase 5 — Text-to-SQL
+**Concept:** The LLM writes a query and the database computes the answer.
+- Prompt = schema + category list + a few example question→SQL pairs + today's date (for "last month"). Say it's **PostgreSQL** so the model uses `date_trunc`, `EXTRACT`, `INTERVAL` correctly.
+- Run as **`rag_reader`** in a read-only transaction; allow only a single `SELECT`; `statement_timeout` (e.g. 5s) and a row limit. Restrict `search_path` to `ragplay` so the model can only see app tables.
+- **Self-correction loop:** on SQL error or empty result, feed the error back and retry (max 2).
+- Have the LLM phrase the result, quoting the exact numbers returned.
+- **Checkpoint:** totals and trends questions are correct against hand-checked answers.
 
-## Phase 6 — Advanced retrieval patterns
-Implement each as a switchable option, and evaluate each against the Phase 5 baseline.
-| Pattern | What it fixes |
-|---|---|
-| **Hybrid search** (BM25 via `rank_bm25` + vectors, merged with Reciprocal Rank Fusion) | Exact terms, names, IDs that embeddings miss |
-| **Re-ranking** (cross-encoder, e.g. `bge-reranker-base` via sentence-transformers, or LLM rerank) | Top-k contains the right chunk but in the wrong order |
-| **Query rewriting / multi-query** | Vague or badly phrased questions |
-| **HyDE** (embed a hypothetical answer) | Question and answer phrased very differently |
-| **Parent-document / small-to-big** (retrieve small chunks, send their parent section) | Precise retrieval but too little context |
-| **Contextual chunk headers** (prepend doc title/heading to chunk before embedding) | Chunks that make no sense alone |
-| **MMR** (max marginal relevance) | Near-duplicate chunks wasting context |
-- **Checkpoint:** an eval table comparing patterns; notes on which helped *your* data and why.
+## Phase 6 — Evaluation (before tuning anything)
+**Concept:** Measure first. Financial data makes this unusually precise, because SQL gives exact ground truth.
+- `eval/questions.jsonl`: 25–40 questions across the three analysis types, each with expected answer (number, list of transaction IDs, or merchant list). Include unanswerable ones ("spend in 2019?").
+- Metrics:
+  - **Numeric exact match** (within $0.01) for totals
+  - **Precision/recall** of returned transactions for "find" questions
+  - **SQL validity rate** and **tool-selection accuracy**
+  - **Faithfulness**: numbers in the answer must appear in tool outputs (checked in code, not by an LLM)
+- `rag eval` prints a table and saves runs to `eval/runs/` (gitignored).
+- **Checkpoint:** baseline scores. Every later change is judged against them.
 
-## Phase 7 — Agentic and conversational patterns
-**Concept:** The LLM decides when and how to retrieve.
-- **Conversational RAG:** chat history + question condensing ("what about the second one?" → standalone query). `rag chat` REPL.
-- **Routing:** classify a question → which collection/filter to use, or no retrieval needed.
-- **Tool-calling RAG:** expose `search_docs(query, filter)` as an Ollama tool; let `qwen3:8b` call it, possibly several times.
-- **Corrective / self-reflective RAG (CRAG / Self-RAG lite):** grade retrieved chunks for relevance; if poor, rewrite the query and retry; check the answer for groundedness before returning.
-- **Checkpoint:** multi-turn chat works; agentic version handles a multi-hop question naive RAG fails.
+## Phase 7 — The agent: tool-calling router
+**Concept:** Agentic RAG. The LLM chooses the retrieval method.
+- Tools exposed to `qwen3:8b` via Ollama tool calling:
+  - `run_sql(query)` for totals, trends and filters
+  - `search_transactions(query, filters)` for fuzzy or semantic lookup
+  - `detect_recurring()`, `find_duplicates()`, `spend_outliers()` (Phase 8)
+  - `get_schema()`, `list_categories()`
+- Agent loop: plan → call tools (possibly several) → answer with numbers and the supporting transactions.
+- **Conversational memory:** `rag chat` REPL; follow-ups like "and in April?" are rewritten into standalone questions.
+- Compare against Phase 5: does routing beat "always SQL"? Is `llama3.2:3b` good enough?
+- **Checkpoint:** one CLI handles all three question types; eval scores recorded.
 
-## Phase 8 — Rebuild with a framework (LlamaIndex)
-**Concept:** Map what you built by hand onto framework abstractions.
-- Same data, Ollama models (`llama-index-llms-ollama`, `llama-index-embeddings-ollama`), and Chroma (`llama-index-vector-stores-chroma`).
-- Rebuild: ingestion pipeline, query engine, reranker, chat engine, agent with tools.
-- Run the same Phase 5 eval.
-- Write `notes/framework-comparison.md`: lines of code, what was hidden, what was hard to customize, debuggability, results.
-- Optional: repeat a slice in LangChain/LangGraph for a second comparison.
-- **Checkpoint:** comparable eval scores; written comparison.
+## Phase 8 — Anomalies and subscriptions
+**Concept:** Compute deterministically; let the LLM explain.
+- `detect_recurring`: group by merchant and look for regular intervals (about 30 days or 1 year) with similar amounts. Flag **price increases**.
+- `find_duplicates`: same merchant and amount within N days.
+- `spend_outliers`: per-category z-score or IQR against your own history; new merchants with large first charges.
+- The LLM produces a "monthly review": what changed, new subscriptions, things worth checking.
+- **Checkpoint:** finds the subscriptions you know you have, plus at least one you'd forgotten (that's the fun part).
 
-## Phase 9 — Production-minded concerns (stretch)
-Pick what interests you:
-- Observability: log each query's retrieved chunks, prompts, latency, tokens (simple JSONL trace, or Arize Phoenix locally).
-- Caching embeddings and answers.
-- Incremental ingest / watch a folder for changes.
-- Prompt-injection risk from documents (content inside docs is untrusted input).
-- Structured output (JSON answers with citations schema).
-- Expose retrieval as an MCP server so other agents can use it.
-- GraphRAG / knowledge-graph extraction (a deeper topic for later).
+## Phase 9 — Rebuild with LlamaIndex
+**Concept:** Map hand-built parts onto framework abstractions.
+- `NLSQLTableQueryEngine` / `SQLTableRetrieverQueryEngine` over the same Postgres (`SQLDatabase` as `rag_reader`), `VectorStoreIndex` on `PGVectorStore` (its own table in the same DB), `RouterQueryEngine`, and a `FunctionAgent` with the same tools; Ollama LLM and embeddings.
+- Run the same eval. Write `notes/framework-comparison.md`: code size, what was hidden, customisation pain, debuggability, scores.
+- **Checkpoint:** comparable scores and a written comparison.
+
+## Phase 10 — Stretch
+- Observability: JSONL trace of each question → tool calls → SQL → result → answer.
+- Budgets: "am I over my dining budget this month?" (adds a `budgets` table).
+- CSV/OFX import as a second ingest path (should share the same `transactions` table).
+- MCP server exposing the read-only tools so other agents can query your spending.
+- Charts in the terminal (`plotext`) for trends.
 
 ---
 
 ## Design patterns covered (cheat sheet)
 | Category | Patterns |
 |---|---|
-| Ingestion | loaders, chunking strategies, metadata enrichment, contextual headers, idempotent/incremental indexing |
-| Retrieval | dense, sparse (BM25), hybrid + RRF, metadata filtering, MMR, parent-document, HyDE, multi-query |
-| Post-retrieval | re-ranking, context compression, deduplication, ordering |
-| Generation | grounded prompting, citations, refusal when unsupported, structured output |
-| Orchestration | naive RAG, conversational RAG, routing, tool-calling/agentic RAG, corrective/self-RAG |
-| Quality | retrieval metrics (hit@k, MRR), LLM-as-judge faithfulness/correctness, regression eval runs |
+| Ingestion | deterministic parsing vs LLM structured extraction, vision fallback, validation/reconciliation, idempotent ingest |
+| Enrichment | entity normalisation, LLM classification with fixed labels, caching, human-in-the-loop corrections |
+| Retrieval | text-to-SQL, dense search + metadata filters in one query (pgvector), hybrid (full-text + trigram + vectors, RRF), structured vs unstructured routing |
+| Orchestration | tool calling, router/agent loop, self-correcting SQL, conversational query rewriting |
+| Analytics | compute in code/SQL, LLM explains; recurring detection, duplicates, outliers |
+| Safety | local-only models, LAN-only DB over TLS, read-only DB role + timeouts, secrets in `.env`, PII masking, untrusted document text, gitignored data |
+| Quality | exact-match numeric eval, retrieval precision/recall, code-checked faithfulness, regression runs |
 
 ## Key decisions recorded
 | Decision | Choice | Reason |
 |---|---|---|
-| Data | Own md/pdf/txt | Easy to judge whether answers are right |
+| Data | Own credit card statements (text PDFs), 1–2 cards, ~1 year | The real use case |
+| Architecture | Hybrid: PostgreSQL relational tables (structured) + pgvector (semantic) + tool-calling agent | Aggregation questions need exact SQL; plain RAG can't add up |
+| Arithmetic | Never done by the LLM | Accuracy |
+| Extraction | Deterministic parser per issuer, validated vs statement totals; LLM extraction as a comparison | Correctness of the base data |
 | Build approach | Scratch first, then LlamaIndex | Understand internals, then learn the abstractions |
-| Vector DB | ChromaDB embedded | No server, minimal setup, metadata filtering |
-| Interface | CLI (typer + rich) | Keeps focus on RAG, not UI |
+| Database | Remote PostgreSQL 17 on the LAN, one DB for facts + vectors (pgvector) | Single store: filters, joins, aggregation and similarity in one SQL query; real DB roles for read-only access |
+| Interface | CLI (typer + rich) | Keeps focus on the RAG design |
 | Python | 3.12 via uv | Library compatibility |
 
 ## Open items
-- Pick the document set to put in `data/raw/` (ideally 20–200 docs on topics you know well).
-- Decide whether `data/raw/` is private (gitignore it) or committed.
+- ~~Which issuers?~~ One: 19 Visa statements (card ...2423, Apr 2025 – Oct 2026) in `cc_statements/`. One parser to start.
+- Category list: start from a standard set (dining, groceries, gas, travel, shopping, subscriptions, utilities, health, entertainment, fees/interest, other) and adjust.
