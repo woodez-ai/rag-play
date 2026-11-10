@@ -80,8 +80,8 @@ Statements are sensitive financial data. Models run locally (Ollama); the data i
 | Role | Model | Why |
 |---|---|---|
 | Chat / tool calling / SQL | `qwen3:8b` (have it) | Good tool calling and text-to-SQL at 8B |
-| Embeddings | `nomic-embed-text` | Small, fast baseline |
-| Embeddings (compare) | `qwen3-embedding` or `mxbai-embed-large` | Embedding comparison exercise |
+| Embeddings (default) | `mxbai-embed-large` (have it) | Won Phase 1: P@3 0.79 on raw descriptors, 0.92 on enriched text |
+| Embeddings (compare) | `nomic-embed-text` (have it), `qwen3-embedding` | nomic was near-random on raw descriptors (0.21) |
 | Small chat (compare) | `llama3.2:3b` | Shows how model size affects SQL and tool-use accuracy |
 
 ---
@@ -147,6 +147,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - Embed merchant strings (`"SQ *BLUE BOTTLE COF"`, `"STARBUCKS #1234"`, `"SHELL OIL 5739"`) and compute cosine similarity with numpy.
 - See that "coffee" lands near coffee shops, but embeddings can't tell $4 from $400, or March from May.
 - **Checkpoint:** you can explain which questions need vectors and which need SQL.
+- ✅ **Done 2026-11-08** → [notes/phase1-embeddings.md](notes/phase1-embeddings.md). Raw descriptors: nomic P@3 0.21 (near random), mxbai 0.79. Enriched `"name: description"` text: up to 0.92. Both models are blind to amounts and dates (`2026-03-14` vs `2026-05-14` = 0.999). Default embedding model is now mxbai; embed enriched text, not raw.
 
 ## Phase 2 — Ingestion: PDF → structured transactions
 **Concept:** Structured extraction is the most important (and least glamorous) part of the pipeline.
@@ -161,16 +162,16 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 ## Phase 3 — Enrichment: merchant normalisation and categories
 **Concept:** LLM as a classifier; caching; humans in the loop.
 - Normalise merchants (`"SQ *BLUE BOTTLE COF 0423"` → `Blue Bottle Coffee`) with rules first, then the LLM for the rest.
-- Categorise each **unique merchant** once (dining, groceries, travel, subscriptions, ...) with an LLM using a fixed category list and structured output. Cache in `merchant_categories`.
+- Categorise each **unique merchant** once (dining, groceries, travel, subscriptions, ...) with an LLM using a fixed category list and structured output. In the same call, generate a **short description** ("specialty coffee roaster and cafe"); Phase 1 showed this is what makes vector search work. Cache both in `merchant_categories` (migration adds a `description` column).
 - `rag categories review` lets you correct categories by hand (`source=manual` always wins).
 - **Checkpoint:** every transaction has a category; you've spot-checked about 50.
 
 ## Phase 4 — Vector search with pgvector
 **Concept:** Dense retrieval with metadata filtering, in the same database as the facts.
-- Embed one text per transaction, e.g. `"Blue Bottle Coffee dining SQ *BLUE BOTTLE COF"`, into `transaction_embeddings`. Date, amount and category stay as real columns, not text in the embedding.
+- Embed one **enriched** text per transaction, e.g. `"Blue Bottle Coffee: specialty coffee roaster and cafe"` (clean name + Phase 3 description), into `transaction_embeddings`. Date and amount stay as real columns, never in the embedded text (Phase 1: embeddings can't tell them apart). Identical texts can share one embedding call.
 - `search_transactions(query, date_from, date_to, min_amount)` is one SQL query: ordinary `WHERE` filters plus `ORDER BY embedding <=> :query_vec LIMIT k` (cosine distance).
 - **Hybrid search** for exact merchant names: rank by full-text (`ts_rank` on `search_tsv`) and trigram similarity (`pg_trgm`) as well as vectors, and merge with **Reciprocal Rank Fusion** in a single SQL query with CTEs.
-- Compare embedding models (`nomic-embed-text` vs `qwen3-embedding`/`mxbai-embed-large`) by storing both and switching `model` in the query.
+- Compare embedding models (`mxbai-embed-large` vs `nomic-embed-text`/`qwen3-embedding`) on real data by storing both and switching `model` in the query.
 - Optional: build an HNSW index and use `EXPLAIN ANALYZE` to compare exact and approximate search.
 - **Checkpoint:** "coffee in March" and "hardware store purchases" return the right transactions.
 
