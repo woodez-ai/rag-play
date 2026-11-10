@@ -18,6 +18,7 @@ Usage: python scripts/make_fake_statements.py --months 12 --end 2026-09 --out da
 import argparse
 import json
 import random
+import textwrap
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -202,7 +203,7 @@ def draw_pdf(path: Path, start: date, end: date, txns: list[Txn], summary: dict)
     c.setFont("Helvetica", 9)
     for t in txns:
         desc = t.description
-        lines = [desc[:48], desc[48:]] if len(desc) > 48 else [desc]
+        lines = textwrap.wrap(desc, 48)  # wrap at spaces, as real statements do
         if y - 12 * len(lines) < 60:
             c.showPage()
             page += 1
