@@ -7,16 +7,18 @@ import os
 from pathlib import Path
 
 import psycopg
+import psycopg.sql
 from dotenv import load_dotenv
 from pgvector.psycopg import register_vector
 
 ROOT = Path(__file__).resolve().parents[2]
 SQL_DIR = ROOT / "sql"
 SCHEMA = "ragplay"
+TEST_SCHEMA = "ragplay_test"  # synthetic data only; tests never touch SCHEMA
 READER_TIMEOUT_MS = 5000
 
 
-def _conninfo(user_var: str, password_var: str, options: str = "") -> str:
+def _conninfo(user_var: str, password_var: str, options: str = "", schema: str = SCHEMA) -> str:
     load_dotenv(ROOT / ".env")
     missing = [v for v in ("DB_HOST", "DB", user_var, password_var) if not os.environ.get(v)]
     if missing:
@@ -28,13 +30,13 @@ def _conninfo(user_var: str, password_var: str, options: str = "") -> str:
         password=os.environ[password_var],
         sslmode="require",
         connect_timeout=10,
-        options=f"-c search_path={SCHEMA},public {options}".strip(),
+        options=f"-c search_path={schema},public {options}".strip(),
     )
 
 
-def connect_owner() -> psycopg.Connection:
-    """Owner connection (rag_user): ingest and migrations."""
-    conn = psycopg.connect(_conninfo("DB_USER", "DB_PASSWORD"))
+def connect_owner(schema: str = SCHEMA) -> psycopg.Connection:
+    """Owner connection (rag_user): ingest and migrations. Tests pass schema=TEST_SCHEMA."""
+    conn = psycopg.connect(_conninfo("DB_USER", "DB_PASSWORD", schema=schema))
     register_vector(conn)
     return conn
 
@@ -56,10 +58,12 @@ def connect_reader() -> psycopg.Connection:
     return conn
 
 
-def migrate() -> list[str]:
+def migrate(schema: str = SCHEMA) -> list[str]:
     """Apply sql/NNN_*.sql files not yet recorded in schema_migrations. Returns applied names."""
     applied = []
-    with connect_owner() as conn:
+    with connect_owner(schema) as conn:
+        conn.execute(psycopg.sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+            psycopg.sql.Identifier(schema)))
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations ("
             " version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"

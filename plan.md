@@ -158,6 +158,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - **Validation:** sum parsed purchases, payments and fees, and reconcile against the statement's summary box. Ingest fails loudly if they don't match.
 - Idempotent ingest keyed on `file_hash` (`UNIQUE` constraint); each statement loads in **one transaction**, so a failed reconcile leaves nothing behind.
 - **Checkpoint:** `rag ingest cc_statements` loads all statements; every statement reconciles to the cent.
+- ✅ **Done 2026-11-10** → [notes/phase2-ingestion.md](notes/phase2-ingestion.md). 19/19 real statements (912 txns) reconcile to the cent and chain balance-to-balance; idempotent re-run. Parser written from a masked layout dump (no real content seen). Reconcile caught 2 real parser bugs (Dec→Jan header, merchant named "…FEE…"). LLM extraction reconciled only 2/6 real runs (dropped rows, wrong amounts, vision dated Jan rows as Dec) and is ~2,000× slower → parser is the ingest path, LLM only a reconcile-gated fallback. Migration `002` adds `previous_balance`, `total_cash_advances`, `parser`.
 
 ## Phase 3 — Enrichment: merchant normalisation and categories
 **Concept:** LLM as a classifier; caching; humans in the loop.
