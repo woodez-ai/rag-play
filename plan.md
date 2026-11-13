@@ -166,6 +166,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - Categorise each **unique merchant** once (dining, groceries, travel, subscriptions, ...) with an LLM using a fixed category list and structured output. In the same call, generate a **short description** ("specialty coffee roaster and cafe"); Phase 1 showed this is what makes vector search work. Cache both in `merchant_categories` (migration adds a `description` column).
 - `rag categories review` lets you correct categories by hand (`source=manual` always wins).
 - **Checkpoint:** every transaction has a category; you've spot-checked about 50.
+- ✅ **Built 2026-11-13** → [notes/phase3-categories.md](notes/phase3-categories.md). 349 raw descriptors → 242 keys (rules) → 166 merchants; 30 keys by rule, 212 by LLM (~4 s each); 0/912 transactions uncategorised; synthetic accuracy 100%. `other` cut from 19% to 4% of transactions by putting `description` before `category` in the schema and removing `fees`/`payment` from the LLM's enum. Migration `003` (merchant_aliases, description, merchant_key). **Open:** owner spot-check via `rag categories review` (a telecom provider is still `other`).
 
 ## Phase 4 — Vector search with pgvector
 **Concept:** Dense retrieval with metadata filtering, in the same database as the facts.
@@ -255,4 +256,4 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 
 ## Open items
 - ~~Which issuers?~~ One: 19 Visa statements (card ...2423, Apr 2025 – Oct 2026) in `cc_statements/`. One parser to start.
-- Category list: start from a standard set (dining, groceries, gas, travel, shopping, subscriptions, utilities, health, entertainment, fees/interest, other) and adjust.
+- ~~Category list~~: settled in Phase 3 (`categorize.CATEGORIES`): groceries, dining, coffee, alcohol, gas, transport, travel, shopping, home, health, personal_care, entertainment, subscriptions, utilities, insurance, education, government, charity, fees, payment, other.
