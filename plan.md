@@ -176,6 +176,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - Compare embedding models (`mxbai-embed-large` vs `nomic-embed-text`/`qwen3-embedding`) on real data by storing both and switching `model` in the query.
 - Optional: build an HNSW index and use `EXPLAIN ANALYZE` to compare exact and approximate search.
 - **Checkpoint:** "coffee in March" and "hardware store purchases" return the right transactions.
+- ✅ **Done 2026-11-13** → [notes/phase4-vector-search.md](notes/phase4-vector-search.md). 912 txns → 167 distinct enriched texts embedded with mxbai and nomic. Real precision (mxbai): concept queries 0.82 vector / 0.81 hybrid, name queries 1.00; nomic found no names by vector, so mxbai stays default. Checkpoint queries pass (vector). Hybrid first scored *below* vector: raw-descriptor full-text matched generic words ("STORE", "THE"); migration `005` moves full-text to the clean merchant name with the `english` config. RRF still trades off concepts against names/typos, so the Phase 7 agent should choose the search mode. HNSW skipped (912 rows).
 
 ## Phase 5 — Text-to-SQL
 **Concept:** The LLM writes a query and the database computes the answer.
