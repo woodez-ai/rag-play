@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ragplay import categorize, db, ingest
+from ragplay import categorize, db, ingest, store
 
 app = typer.Typer(no_args_is_help=True, help="Credit card statement analyst (local RAG).")
 db_app = typer.Typer(no_args_is_help=True, help="Database setup and checks.")
@@ -81,6 +81,52 @@ def categorize_cmd(
     console.print(f"{st.keys} merchant keys: {st.cached} cached, {st.rule} by rule, "
                   f"{st.llm} by LLM{per}. {st.updated} transactions updated; "
                   f"{uncategorised} without a category.")
+
+
+@app.command("embed")
+def embed_cmd(
+    model: str = typer.Option(store.DEFAULT_MODEL),
+    schema: str = typer.Option(db.SCHEMA),
+) -> None:
+    """Embed each transaction's "merchant: description" text into pgvector (new/changed only)."""
+    with db.connect_owner(schema) as conn:
+        conn.autocommit = True
+        with console.status(f"embedding with {model}..."):
+            written, texts = store.embed_transactions(conn, model)
+        total = conn.execute("SELECT count(*) FROM transaction_embeddings WHERE model = %s",
+                             (model,)).fetchone()[0]
+    console.print(f"{model}: embedded {texts} distinct texts -> {written} transactions "
+                  f"({total} stored).")
+
+
+@app.command("search")
+def search_cmd(
+    query: str,
+    mode: str = typer.Option("hybrid", help="hybrid | vector | text"),
+    date_from: str = typer.Option(None, "--from", help="YYYY-MM-DD"),
+    date_to: str = typer.Option(None, "--to", help="YYYY-MM-DD"),
+    min_amount: float = typer.Option(None, "--min"),
+    max_amount: float = typer.Option(None, "--max"),
+    category: str = typer.Option(None),
+    k: int = typer.Option(10, "-k"),
+    model: str = typer.Option(store.DEFAULT_MODEL),
+    schema: str = typer.Option(db.SCHEMA),
+) -> None:
+    """Find transactions by meaning and/or name, with date/amount/category filters."""
+    from datetime import date
+    from decimal import Decimal
+
+    dec = lambda x: None if x is None else Decimal(str(x))
+    day = lambda s: None if s is None else date.fromisoformat(s)
+    with db.connect_reader() if schema == db.SCHEMA else db.connect_owner(schema) as conn:
+        hits = store.search(conn, query, mode=mode, model=model, k=k, date_from=day(date_from),
+                            date_to=day(date_to), min_amount=dec(min_amount),
+                            max_amount=dec(max_amount), category=category)
+    table = Table("date", "merchant", "category", "amount", "score", "raw")
+    for h in hits:
+        table.add_row(str(h.txn_date), h.merchant or "", h.category or "", f"{h.amount:,.2f}",
+                      f"{h.score:.4f}", h.description_raw)
+    console.print(table)
 
 
 categories_app = typer.Typer(no_args_is_help=True, help="Inspect and correct merchant categories.")
