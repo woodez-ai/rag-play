@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ragplay import categorize, db, ingest, store, text2sql
+from ragplay import categorize, db, evaluate, ingest, store, text2sql
 
 app = typer.Typer(no_args_is_help=True, help="Credit card statement analyst (local RAG).")
 db_app = typer.Typer(no_args_is_help=True, help="Database setup and checks.")
@@ -158,6 +158,46 @@ def ask_cmd(
     if ans.unsupported:
         console.print(f"[yellow]Warning: numbers not in the query result: {', '.join(ans.unsupported)}[/]")
     console.print(f"[dim]{ans.seconds:.0f}s[/]")
+
+
+@app.command("eval")
+def eval_cmd(
+    set_name: str = typer.Option("real", "--set", help="real (eval/questions.jsonl) | sample"),
+    ids: str = typer.Option(None, help="Comma-separated question ids to run."),
+    model: str = typer.Option(text2sql.MODEL),
+) -> None:
+    """Run the eval set, print scores, save the run to eval/runs/ (gitignored).
+    The real set prints pass/fail only; answers (with amounts) stay in the run file."""
+    questions = evaluate.load(evaluate.SETS[set_name])
+    if ids:
+        keep = set(ids.split(","))
+        questions = [q for q in questions if q["id"] in keep]
+    real = set_name == "real"
+    connect = db.connect_reader if real else (lambda: db.connect_owner(db.TEST_SCHEMA))
+
+    def show(r: evaluate.Result) -> None:
+        pr = "" if r.precision is None else f" P={r.precision:.2f} R={r.recall:.2f}"
+        flags = ("" if r.sql_valid else " sql-retry") + ("" if r.faithful else " UNFAITHFUL") + \
+                (f" ERROR {r.error}" if r.error else "")
+        console.print(f"[{'green' if r.passed else 'red'}]{'PASS' if r.passed else 'FAIL'}[/] "
+                      f"{r.id} {r.type:12} {r.seconds:3.0f}s{pr}{flags}  {r.question}")
+        if not real and not r.passed:
+            console.print(f"      [dim]{r.sql}\n      {r.answer}[/]")
+
+    with connect() as conn:
+        results = evaluate.evaluate(conn, questions, model=model, progress=show)
+    s = evaluate.summary(results)
+    path = evaluate.save(set_name, "sql", model, results)
+    table = Table("type", "n", "passed", "precision", "recall")
+    for t, v in s["by_type"].items():
+        f = lambda x: "" if x is None else f"{x:.2f}"
+        table.add_row(t, str(v["n"]), str(v["passed"]), f(v["precision"]), f(v["recall"]))
+    console.print(table)
+    console.print(f"[bold]{s['passed']}/{s['n']} passed[/]; SQL valid first try {s['sql_valid']:.0%}; "
+                  f"faithful {s['faithful']:.0%}; {s['retried']} retried; {s['crashed']} crashed; "
+                  f"{s['seconds']}s.  By expected tool: "
+                  + ", ".join(f"{t} {v['passed']}/{v['n']}" for t, v in s["by_tool"].items()))
+    console.print(f"[dim]saved {path.relative_to(evaluate.ROOT)}[/]")
 
 
 categories_app = typer.Typer(no_args_is_help=True, help="Inspect and correct merchant categories.")

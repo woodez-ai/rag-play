@@ -197,6 +197,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
   - **Faithfulness**: numbers in the answer must appear in tool outputs (checked in code, not by an LLM)
 - `rag eval` prints a table and saves runs to `eval/runs/` (gitignored).
 - **Checkpoint:** baseline scores. Every later change is judged against them.
+- ✅ **Done 2026-11-14** → [notes/phase6-eval.md](notes/phase6-eval.md). Truth = reference SQL run at eval time (no amounts in the question file). Baseline (always text-to-SQL): **real 23/31** (totals 18/19, find 2/7, list 1/2, unanswerable 2/3; SQL valid first try 90%, faithful 97%); sample 12/16. Main gaps: "show me…" questions get aggregated (5/7 finds), zero vs no-data, "regularly" ignored, doesn't decline unanswerable. Three scorer bugs fixed before trusting any number (month in sentence, grouped duplicates, ±$0.01 tolerance accepting wrong answers).
 
 ## Phase 7 — The agent: tool-calling router
 **Concept:** Agentic RAG. The LLM chooses the retrieval method.
