@@ -185,6 +185,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - **Self-correction loop:** on SQL error or empty result, feed the error back and retry (max 2).
 - Have the LLM phrase the result, quoting the exact numbers returned.
 - **Checkpoint:** totals and trends questions are correct against hand-checked answers.
+- ✅ **Done 2026-11-14** → [notes/phase5-text2sql.md](notes/phase5-text2sql.md). Phase 0 baseline questions **2/5 → 5/5** (2–9 min → ~14 s each). Synthetic 12/12, real 11/11 against hand-written reference SQL, 0 answers with numbers not in the result. Getting there: conflicting prompt rules (statement vs calendar month), "kinds of business = categories", SQL in a code block instead of JSON (qwen3 dropped closing quotes inside JSON), and an example where a rule didn't work. Thinking on: >72 min vs 165 s, no accuracy headroom → off.
 
 ## Phase 6 — Evaluation (before tuning anything)
 **Concept:** Measure first. Financial data makes this unusually precise, because SQL gives exact ground truth.

@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ragplay import categorize, db, ingest, store
+from ragplay import categorize, db, ingest, store, text2sql
 
 app = typer.Typer(no_args_is_help=True, help="Credit card statement analyst (local RAG).")
 db_app = typer.Typer(no_args_is_help=True, help="Database setup and checks.")
@@ -127,6 +127,37 @@ def search_cmd(
         table.add_row(str(h.txn_date), h.merchant or "", h.category or "", f"{h.amount:,.2f}",
                       f"{h.score:.4f}", h.description_raw)
     console.print(table)
+
+
+@app.command("ask")
+def ask_cmd(
+    question: str,
+    show_sql: bool = typer.Option(False, "--sql", help="Show the generated SQL and attempts."),
+    think: bool = typer.Option(False, help="Let qwen3 think before writing SQL (slower)."),
+    model: str = typer.Option(text2sql.MODEL),
+    schema: str = typer.Option(db.SCHEMA),
+) -> None:
+    """Answer a question with LLM-written SQL (read-only; the database does the maths)."""
+    with db.connect_reader() if schema == db.SCHEMA else db.connect_owner(schema) as conn:
+        with console.status("thinking..."):
+            ans = text2sql.ask(conn, question, model=model, think=think)
+    if show_sql:
+        for i, a in enumerate(ans.attempts, 1):
+            status = a.error or ("no rows" if a.empty else f"{len(a.rows)} rows")
+            console.print(f"[dim]attempt {i}: {status}[/]\n{a.sql}\n")
+    final = ans.final
+    if final is None:
+        console.print("[red]Could not produce a working query.[/]")
+        raise typer.Exit(1)
+    if final.rows and len(final.rows) > 1 or show_sql:
+        table = Table(*final.columns)
+        for r in final.rows[:50]:
+            table.add_row(*(text2sql._fmt(v) for v in r))
+        console.print(table)
+    console.print(ans.text)
+    if ans.unsupported:
+        console.print(f"[yellow]Warning: numbers not in the query result: {', '.join(ans.unsupported)}[/]")
+    console.print(f"[dim]{ans.seconds:.0f}s[/]")
 
 
 categories_app = typer.Typer(no_args_is_help=True, help="Inspect and correct merchant categories.")
