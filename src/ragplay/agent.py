@@ -14,6 +14,7 @@ standalone question using the previous turns, then answered like any other quest
 """
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -22,7 +23,7 @@ from decimal import Decimal
 import ollama
 import psycopg
 
-from ragplay import store, text2sql
+from ragplay import anomalies, store, text2sql
 from ragplay.text2sql import Attempt
 
 MODEL = "qwen3:8b"
@@ -58,7 +59,36 @@ TOOLS = [
             "max_amount": {"type": "number"},
             "text": {"type": "string", "description": "free-text description, e.g. 'baseball game'"}},
             "required": []}}},
+    {"type": "function", "function": {
+        "name": "detect_recurring",
+        "description": "Recurring charges (subscriptions, bills, memberships) found from regular "
+                       "intervals and similar amounts: merchant, cadence, current amount, whether "
+                       "still active, PRICE CHANGES, next expected charge. Use for 'subscriptions', "
+                       "'recurring', 'regularly', 'price went up', 'forgotten subscriptions'.",
+        "parameters": {"type": "object", "properties": {
+            "category": {"type": "string", "description": "only this category, e.g. 'subscriptions'"},
+            "active_only": {"type": "boolean", "description": "only series still being charged"},
+            "price_increased_only": {"type": "boolean",
+                                     "description": "only series whose price went UP; use for "
+                                                    "'went up', 'price increase' questions"}},
+            "required": []}}},
+    {"type": "function", "function": {
+        "name": "find_duplicates",
+        "description": "Possible duplicate charges: same merchant and same amount within `days` "
+                       "days (0 = same day).",
+        "parameters": {"type": "object", "properties": {
+            "days": {"type": "integer", "description": "max days apart, default 0"},
+            "date_from": {"type": "string"}, "date_to": {"type": "string"}},
+            "required": []}}},
+    {"type": "function", "function": {
+        "name": "spend_outliers",
+        "description": "Unusually large purchases compared with the user's own history: more than "
+                       "3x the usual amount for their category and among their largest overall.",
+        "parameters": {"type": "object", "properties": {
+            "date_from": {"type": "string"}, "date_to": {"type": "string"}},
+            "required": []}}},
 ]
+ANOMALY_TOOLS = {"detect_recurring", "find_duplicates", "spend_outliers"}
 
 # What each category covers (same meanings Phase 3 used to assign them). Without this the model
 # mapped "hardware store" to 'shopping' instead of 'home'.
@@ -77,6 +107,10 @@ What they cover: {guide}
 Rules:
 - Never calculate anything yourself. Use query_database for any total, count, average, maximum,
   comparison or ranking; use find_transactions to show or list individual transactions.
+- Subscriptions, recurring charges: detect_recurring. Price increases: detect_recurring with
+  price_increased_only=true (if it returns no rows, nothing went up). Duplicate charges:
+  find_duplicates. Unusual or unexpectedly large purchases: spend_outliers. These are computed
+  by code; report what they return and don't add your own judgement of what is recurring.
 - Quote numbers exactly as the tools return them.
 - The data contains this card's transactions and its monthly statements (balances and totals
   of purchases, payments, fees and interest charged). Questions about those are answerable,
@@ -170,7 +204,8 @@ def run_tool(conn: psycopg.Connection, name: str, args: dict, *, model: str, tod
             else:
                 call.sql, call.columns, call.rows = final.sql, final.columns, final.rows
         elif name == "find_transactions":
-            unknown = set(args) - set(TOOLS[1]["function"]["parameters"]["properties"])
+            unknown = set(args) - set(next(t for t in TOOLS if t["function"]["name"] == name)
+                                      ["function"]["parameters"]["properties"])
             if unknown:
                 # qwen3 invented sort/limit to answer "largest purchase" by reading rows itself
                 call.error = (f"unknown argument(s) {sorted(unknown)}. find_transactions only "
@@ -187,6 +222,25 @@ def run_tool(conn: psycopg.Connection, name: str, args: dict, *, model: str, tod
                 call.arguments = {**args, "relaxed": f"dropped {key}"}
             call.columns = ["id", "txn_date", "merchant", "amount", "category"]
             call.rows = [(h.id, h.txn_date, h.merchant, h.amount, h.category) for h in hits]
+        elif name in ANOMALY_TOOLS:
+            known = set(next(t for t in TOOLS if t["function"]["name"] == name)
+                        ["function"]["parameters"]["properties"])
+            args = {k: v for k, v in args.items() if k in known and v not in (None, "")}
+            if name == "detect_recurring":
+                series = anomalies.detect_recurring(conn, category=args.get("category"))
+                if args.get("active_only"):
+                    series = [s for s in series if s.active]
+                if args.get("price_increased_only"):
+                    series = [s for s in series if s.increased]
+                call.columns, call.rows = anomalies.recurring_rows(series)
+            elif name == "find_duplicates":
+                pairs = anomalies.find_duplicates(conn, days=int(args.get("days", 0)),
+                                                  date_from=_date(args.get("date_from")),
+                                                  date_to=_date(args.get("date_to")))
+                call.columns, call.rows = anomalies.duplicate_rows(pairs, conn)
+            else:
+                call.columns, call.rows = anomalies.outlier_rows(anomalies.spend_outliers(
+                    conn, date_from=_date(args.get("date_from")), date_to=_date(args.get("date_to"))))
         else:
             call.error = f"unknown tool {name!r}"
     except (ValueError, TypeError, psycopg.Error) as e:
@@ -213,6 +267,27 @@ def _tool_text(call: ToolCall) -> str:
     return body + more
 
 
+REVIEW = """Write a short monthly credit card review for {month} from the FACTS below (JSON,
+computed by code). 4 to 8 bullet points, most important first: how total spending compares
+with the usual, the biggest category changes, price changes, new recurring charges, recurring
+charges that didn't appear, possible duplicates, unusual purchases, notable new merchants.
+Rules: use ONLY these facts; copy numbers exactly; do not add, subtract or estimate anything;
+skip empty sections; end with at most two things worth checking.
+
+FACTS:
+{facts}"""
+
+
+def review(conn: psycopg.Connection, month: str | None = None, *, model: str = MODEL) -> tuple[dict, str, list[str]]:
+    """Deterministic facts for the month -> LLM narrative -> numbers in the narrative that are
+    not in the facts. Returns (facts, text, unsupported)."""
+    facts = anomalies.monthly_review(conn, month)
+    blob = json.dumps(facts, default=str, indent=1)
+    text = (_chat([{"role": "user", "content": REVIEW.format(month=facts["month"], facts=blob)}],
+                  model).content or "").strip()
+    return facts, text, text2sql.unsupported_numbers(text, blob, [], [])
+
+
 def rewrite(question: str, history: list[tuple[str, str]], model: str) -> str:
     if not history:
         return question
@@ -221,12 +296,45 @@ def rewrite(question: str, history: list[tuple[str, str]], model: str) -> str:
     return msg.content.strip().strip('"') or question
 
 
+# Deterministic routing for calculation questions. With 2 tools qwen3 routed these well; with 5
+# it started answering "how much / how many / largest" with find_transactions and doing the
+# arithmetic itself (sample totals 9/9 -> 6/9, one total off by $30). A rule decides reliably,
+# so the LLM doesn't get the choice. Anything else (show/list, subscriptions, duplicates,
+# unusual purchases, unanswerable) still goes to the agent.
+CALC_RE = re.compile(
+    r"\b(how much|how many|total|sum|average|avg|mean|largest|smallest|biggest|highest|lowest|"
+    r"most|least|more than .* than|less than .* than|compare|per month|which (month|category|"
+    r"merchant|year)|balance|interest|count)\b", re.I)
+ANOMALY_RE = re.compile(r"\b(subscriptions?|recurring|regularly|duplicates?|unusual|went up|"
+                        r"price (increase|change)|show|list)\b", re.I)
+
+
+def _answer_with_sql(conn: psycopg.Connection, ans: AgentAnswer, *, model: str,
+                     today: date) -> AgentAnswer | None:
+    """Text-to-SQL straight away; None if no working query (then the agent gets a turn)."""
+    sub = text2sql.ask(conn, ans.standalone, model=model, today=today)
+    if sub.attempts:
+        ans.sql_first_try = sub.attempts[0].error is None
+    final = sub.final
+    if final is None:
+        return None
+    ans.calls.append(ToolCall("query_database", {"routed": "calculation"}, final.columns,
+                              final.rows, final.sql))
+    ans.text, ans.unsupported = sub.text, sub.unsupported
+    return ans
+
+
 def ask(conn: psycopg.Connection, question: str, *, model: str = MODEL, today: date | None = None,
         history: list[tuple[str, str]] | None = None) -> AgentAnswer:
     t0 = time.time()
     today = today or date.today()
     standalone = rewrite(question, history or [], model)
     ans = AgentAnswer(question, standalone)
+    if CALC_RE.search(standalone) and not ANOMALY_RE.search(standalone):
+        routed = _answer_with_sql(conn, ans, model=model, today=today)
+        if routed is not None:
+            routed.seconds = time.time() - t0
+            return routed
     first, last = conn.execute("SELECT min(txn_date), max(txn_date) FROM transactions").fetchone()
     system = SYSTEM.format(first=first, last=last, today=today, guide=CATEGORY_GUIDE,
                            categories=", ".join(text2sql.categories(conn)))

@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import Decimal
 
-from ragplay.evaluate import declined, score_find, score_list, score_total
+from ragplay.evaluate import declined, score_find, score_list, score_list_answer, score_total
 from ragplay.text2sql import Attempt
 
 
@@ -76,8 +76,43 @@ def test_list_from_transaction_rows():
     assert score_list(["Netflix", "Spotify"], rows) == (1.0, 1.0)
 
 
+KNOWN = ["Netflix", "Spotify", "Apple", "Uber", "Uber Eats", "dining", "groceries"]
+
+
+def test_list_answer_scoring():
+    assert score_list_answer(["Netflix"], "Only Netflix went up, from 15.49 to 17.99.", KNOWN) == (1.0, 1.0)
+    assert score_list_answer(["Netflix"], "Netflix and Spotify went up.", KNOWN) == (0.5, 1.0)
+    assert score_list_answer(["Netflix", "Spotify"], "Netflix.", KNOWN) == (1.0, 0.5)
+
+
+def test_list_answer_empty_truth():
+    q = "Which subscriptions went up in price?"
+    assert score_list_answer([], "None of your subscriptions went up in price.", KNOWN, q) == (1.0, 1.0)
+    assert score_list_answer([], "Spotify went up.", KNOWN, q) == (0.0, 1.0)
+
+
+def test_list_answer_negated_lines_are_not_claims():
+    answer = ("The following subscriptions had price increases:\n1. **Netflix**: Increased from $15.49 "
+              "to $17.99.\n2. **Apple**: No price change noted.\n3. **Spotify**: No price change noted.")
+    assert score_list_answer(["Netflix"], answer, KNOWN, "Which subscriptions went up in price?") == (1.0, 1.0)
+
+
+def test_list_answer_negation_only_matters_for_change_questions():
+    answer = ("You pay for:\n1. **Apple** - Monthly, $2.99, no price change.\n"
+              "2. **Netflix** - Monthly, $17.99, increased from $15.49.\n3. **Spotify** - Monthly, no price change.")
+    q = "Which subscriptions do I pay for regularly?"
+    assert score_list_answer(["Apple", "Netflix", "Spotify"], answer, KNOWN, q) == (1.0, 1.0)
+
+
+def test_list_answer_longest_name_wins():
+    assert score_list_answer(["Uber Eats"], "You use Uber Eats every month.", KNOWN) == (1.0, 1.0)
+
+
 def test_declined():
     assert declined(None, "")
     assert declined(final(["t"], [(None,)]), "There is no data for 2019.")
     assert declined(final(["t"], [(D("100"),)]), "I don't have data on credit scores.")
     assert not declined(final(["credit_score"], [("Unknown",)]), "Your credit score is Unknown.")
+    # empty result but the answer invents an amount: not a decline
+    assert not declined(final(["year", "total"], []), "The total spent in 2019 was $2543.75.")
+    assert declined(final(["total"], [(None,)]), "You spent $0 in 2019: there is no data.")

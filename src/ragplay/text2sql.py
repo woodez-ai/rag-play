@@ -218,6 +218,14 @@ LIST_MARKER = re.compile(r"(?m)^\s*\d{1,3}[.)]\s+|(?<=\s)\d{1,3}\.\s+(?=\d{4}-\d
 ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
+NO_DATA_TEXT = "There is no data for that: the query found no matching transactions."
+
+
+def is_empty(rows: list[tuple]) -> bool:
+    """No rows, or one row of only NULLs (e.g. SUM over nothing)."""
+    return not rows or (len(rows) == 1 and all(v is None for v in rows[0]))
+
+
 ANSWER_PROMPT = """Question: {question}
 SQL that was run: {sql}
 Result:
@@ -250,7 +258,11 @@ def ask(conn: psycopg.Connection, question: str, *, model: str = MODEL, today: d
             break
         att.empty = True  # no rows may be a wrong filter: worth one retry, then accept it
     final = ans.final
-    if phrase and final is not None:
+    if phrase and final is not None and is_empty(final.rows):
+        # Never ask the LLM to phrase nothing: given an empty result for "spend in 2019?",
+        # qwen3 wrote "The total spent in 2019 was $2543.75."
+        ans.text = NO_DATA_TEXT
+    elif phrase and final is not None:
         ans.text = _chat(ANSWER_PROMPT.format(question=question, sql=final.sql,
                                               result=result_text(final.columns, final.rows)), model).strip()
         ans.unsupported = unsupported_numbers(ans.text, question, final.columns, final.rows)
