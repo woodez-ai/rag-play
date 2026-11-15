@@ -18,7 +18,8 @@ Metrics (all checked in code, never by an LLM):
   declined          unanswerable: empty/NULL/0 result, or a "no data" answer
   sql valid         first generated query ran without error
   faithful          every number in the answer is in the result or the question
-  tool              the question's expected tool (scored once Phase 7 routes between tools)
+  tool              expected tool: sql (calculation) | search (return rows) | none (decline)
+                    | anomaly (Phase 8); tool accuracy = first tool used == expected
 """
 
 import json
@@ -33,6 +34,7 @@ import psycopg
 
 from ragplay import text2sql
 
+TOOL_LABEL = {"query_database": "sql", "find_transactions": "search"}
 EVAL_TODAY = date(2026, 11, 14)  # fixed so "last month" means the same thing on every run
 ROOT = Path(__file__).resolve().parents[2]
 SETS = {"real": ROOT / "eval/questions.jsonl", "sample": ROOT / "eval/questions.sample.jsonl"}
@@ -54,8 +56,10 @@ class Result:
     result_exact: bool | None = None
     precision: float | None = None
     recall: float | None = None
-    sql_valid: bool = False
+    sql_valid: bool | None = False
     faithful: bool = True
+    tools: str = ""        # tools actually used, in order (sql | search | none)
+    tool_ok: bool = False  # first tool used == expected tool
     attempts: int = 0
     seconds: float = 0.0
     sql: str = ""
@@ -83,6 +87,8 @@ def _contains(values: set, truth) -> bool:
     """Exact to the cent. Both sides are rounded to cents, so a ±0.01 tolerance would only
     accept wrong answers ($674.00 for $673.99)."""
     t = _norm(truth)
+    if t is None:  # reference returned NULL: nothing to match (a broken/empty dataset)
+        return False
     if isinstance(t, Decimal):
         return t in values
     return any(isinstance(v, str) and t in v for v in values)  # also months: "2026-09" in "...2026-09-01"
@@ -134,8 +140,14 @@ def score_find(expected: list[tuple], final) -> tuple[float, float]:
 
 
 def score_list(expected: list[str], final) -> tuple[float, float]:
+    """Distinct names from the result's merchant (or category) column, else its first column,
+    so transaction rows from find_transactions (id first) are scored by their merchants."""
     exp = [e.lower() for e in expected]
-    got = [str(r[0]).lower() for r in final.rows] if final and final.rows else []
+    got = []
+    if final and final.rows:
+        cols = [c.lower() for c in final.columns]
+        i = next((cols.index(c) for c in ("merchant", "category") if c in cols), 0)
+        got = list(dict.fromkeys(str(r[i]).lower() for r in final.rows))
     found = {e for e in exp if any(e in g or g in e for g in got)}
     good_rows = sum(any(e in g or g in e for e in exp) for g in got)
     return (good_rows / len(got) if got else (1.0 if not exp else 0.0)), (len(found) / len(exp) if exp else 1.0)
@@ -146,24 +158,65 @@ def declined(final, answer: str) -> bool:
     return empty or bool(NO_DATA.search(answer))
 
 
+def ensure_sample(conn: psycopg.Connection, fake_dir: Path = ROOT / "data/fake") -> None:
+    """Load the synthetic statements into the sample schema if it's empty (ingest, categorise
+    with the LLM, embed). Its own schema: the test suite truncates ragplay_test."""
+    from ragplay import categorize, ingest, store
+
+    if conn.execute("SELECT count(*) FROM transactions").fetchone()[0]:
+        return
+    pdfs = sorted(fake_dir.glob("*.pdf"))
+    if not pdfs:
+        raise RuntimeError(f"no synthetic PDFs in {fake_dir}; run scripts/make_fake_statements.py")
+    for pdf in pdfs:
+        r = ingest.ingest_file(conn, pdf)
+        if r.status == "failed":
+            raise RuntimeError(f"{pdf.name}: {r.errors}")
+    categorize.categorize(conn)
+    store.embed_transactions(conn)
+
+
 def evaluate(conn: psycopg.Connection, questions: list[dict], *, model: str = text2sql.MODEL,
-             progress=None) -> list[Result]:
-    """System under test: text-to-SQL for every question (the Phase 5 'always SQL' baseline)."""
+             system: str = "sql", progress=None, reconnect=None) -> list[Result]:
+    """system: 'sql' = text-to-SQL for every question (Phase 5 baseline);
+               'agent' = the Phase 7 tool-calling agent (it chooses the tool).
+    reconnect: callable returning a fresh connection. The connection is pinged before each
+    question and replaced if the server dropped it (a laptop that sleeps mid-run), so one
+    dropped connection doesn't fail every remaining question."""
+    from ragplay import agent
+
     out = []
     for q in questions:
+        if reconnect:
+            try:
+                conn.execute("SELECT 1")
+            except psycopg.OperationalError:
+                conn = reconnect()
         r = Result(q["id"], q["type"], q.get("tool", "sql"), q["question"])
-        ref_cols, ref_rows = (text2sql.run_sql(conn, q["ref_sql"]) if q.get("ref_sql") else ([], []))
         t0 = time.time()
         try:
-            ans = text2sql.ask(conn, q["question"], model=model, today=EVAL_TODAY)
+            ref_cols, ref_rows = (text2sql.run_sql(conn, q["ref_sql"]) if q.get("ref_sql") else ([], []))
+            if system == "agent":
+                ans = agent.ask(conn, q["question"], model=model, today=EVAL_TODAY)
+                r.attempts = len(ans.calls)
+                r.sql_valid = ans.sql_first_try if ans.sql_first_try is not None else None
+                r.tools = ",".join(TOOL_LABEL.get(t, t) for t in ans.tools) or "none"
+                r.sql = "; ".join(f"{c.name}({c.sql or c.arguments})" for c in ans.calls)
+            else:
+                ans = text2sql.ask(conn, q["question"], model=model, today=EVAL_TODAY)
+                r.attempts = len(ans.attempts)
+                r.sql_valid = bool(ans.attempts) and ans.attempts[0].error is None
+                r.tools = "sql"
+                r.sql = ans.final.sql if ans.final else (ans.attempts[-1].sql if ans.attempts else "")
         except Exception as e:  # a crash is a failed question, not a failed eval
             r.error, r.seconds = f"{type(e).__name__}: {e}", time.time() - t0
             out.append(r)
+            if progress:
+                progress(r)
             continue
         final = ans.final
-        r.attempts, r.seconds, r.answer = len(ans.attempts), ans.seconds, ans.text
-        r.sql = final.sql if final else (ans.attempts[-1].sql if ans.attempts else "")
-        r.sql_valid = bool(ans.attempts) and ans.attempts[0].error is None
+        r.seconds, r.answer = ans.seconds, ans.text
+        r.tool_ok = r.tools.split(",")[0] == r.tool
         r.faithful = not ans.unsupported
         if q["type"] == "total":
             truth = list(ref_rows[0]) if ref_rows else []
@@ -201,6 +254,7 @@ def summary(results: list[Result]) -> dict:
         "n": len(results), "passed": sum(r.passed for r in results),
         "sql_valid": mean([r.sql_valid for r in results]),
         "faithful": mean([r.faithful for r in results]),
+        "tool_accuracy": mean([r.tool_ok for r in results]),
         "retried": sum(r.attempts > 1 for r in results),
         "crashed": sum(bool(r.error) for r in results),
         "seconds": round(sum(r.seconds for r in results)),

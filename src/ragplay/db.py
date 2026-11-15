@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 SQL_DIR = ROOT / "sql"
 SCHEMA = "ragplay"
 TEST_SCHEMA = "ragplay_test"  # synthetic data only; tests never touch SCHEMA
+SAMPLE_SCHEMA = "ragplay_sample"  # synthetic data for `rag eval --set sample` (tests truncate TEST_SCHEMA)
 READER_TIMEOUT_MS = 5000
+IDLE_TX_TIMEOUT_MS = 600_000  # 10 min
 
 
 def _conninfo(user_var: str, password_var: str, options: str = "", schema: str = SCHEMA) -> str:
@@ -30,13 +32,20 @@ def _conninfo(user_var: str, password_var: str, options: str = "", schema: str =
         password=os.environ[password_var],
         sslmode="require",
         connect_timeout=10,
-        options=f"-c search_path={schema},public {options}".strip(),
+        # A laptop that sleeps mid-run left a session "idle in transaction" for 76 min, holding
+        # locks that blocked tests. Keepalives let the server notice a vanished client; the idle
+        # timeout ends any transaction left open.
+        keepalives=1, keepalives_idle=60, keepalives_interval=10, keepalives_count=3,
+        options=(f"-c search_path={schema},public "
+                 f"-c idle_in_transaction_session_timeout={IDLE_TX_TIMEOUT_MS} {options}").strip(),
     )
 
 
 def connect_owner(schema: str = SCHEMA) -> psycopg.Connection:
-    """Owner connection (rag_user): ingest and migrations. Tests pass schema=TEST_SCHEMA."""
-    conn = psycopg.connect(_conninfo("DB_USER", "DB_PASSWORD", schema=schema))
+    """Owner connection (rag_user): ingest and migrations. Tests pass schema=TEST_SCHEMA.
+    Autocommit: every write path uses an explicit conn.transaction(), so no implicit
+    transaction (and its locks) stays open between statements."""
+    conn = psycopg.connect(_conninfo("DB_USER", "DB_PASSWORD", schema=schema), autocommit=True)
     register_vector(conn)
     return conn
 
@@ -52,7 +61,8 @@ def connect_reader() -> psycopg.Connection:
             "DB_READER_USER",
             "DB_READER_PASSWORD",
             f"-c default_transaction_read_only=on -c statement_timeout={READER_TIMEOUT_MS}",
-        )
+        ),
+        autocommit=True,
     )
     register_vector(conn)
     return conn

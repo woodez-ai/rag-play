@@ -32,6 +32,10 @@ def test_total_month_in_sentence_and_words():
     assert not score_total(["2026-09"], f, "August 2026 was the highest.")[0]
 
 
+def test_total_null_truth_fails_instead_of_crashing():
+    assert score_total([None], final(["t"], [(D("1"),)]), "1") == (False, False)
+
+
 def test_total_text_value():
     f = final(["category"], [("dining",)])
     assert score_total(["dining"], f, "You spent the most on Dining.") == (True, True)
@@ -63,6 +67,13 @@ def test_find_grouped_duplicates_count():
 def test_list():
     assert score_list(["Netflix", "Spotify"], final(["merchant"], [("Netflix",), ("Spotify",)])) == (1.0, 1.0)
     assert score_list(["Netflix", "Spotify"], final(["merchant"], [("Netflix",), ("Uber",)])) == (0.5, 0.5)
+
+
+def test_list_from_transaction_rows():
+    rows = final(["id", "txn_date", "merchant", "amount"],
+                 [(1, date(2026, 1, 3), "Netflix", D("15.49")), (2, date(2026, 2, 3), "Netflix", D("15.49")),
+                  (3, date(2026, 1, 9), "Spotify", D("11.99"))])
+    assert score_list(["Netflix", "Spotify"], rows) == (1.0, 1.0)
 
 
 def test_declined():

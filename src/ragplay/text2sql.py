@@ -53,6 +53,9 @@ RULES = """\
 Conventions:
 - "Spending"/"spent" = SUM(amount) over type IN ('purchase', 'refund') (refunds net off).
   Never include payments. Fees and interest only when asked.
+- Interest or fees CHARGED: use statements.total_interest / statements.total_fees (by
+  period_end), wrapped in COALESCE(..., 0). They may not appear as transactions, and zero
+  is a real answer, not missing data.
 - "Charges"/"charged by"/"purchases" = type = 'purchase'.
 - Kinds of business ("gas stations", "coffee shops", "restaurants") are CATEGORIES: filter
   with category = '...' or category IN (...) when the question names several kinds.
@@ -198,11 +201,21 @@ def unsupported_numbers(answer: str, question: str, cols: list[str], rows: list[
     """Numbers in the answer that appear in neither the result rows nor the question.
     Compared by value, so 1234.5 == 1,234.50, and sign-insensitive ("refunds of $5" vs -5.00)."""
     allowed = {abs(n) for n in numbers(question)}
-    for r in rows:
-        for v in r:
-            allowed |= {abs(n) for n in numbers(_fmt(v))}
+    cells = [_fmt(v) for r in rows for v in r]
+    for cell in cells:
+        allowed |= {abs(n) for n in numbers(cell)}
     allowed |= {Decimal(len(rows))}
-    return sorted(str(n) for n in numbers(answer) if abs(n) not in allowed)
+    if not rows or any(v is None for r in rows for v in r):
+        allowed.add(Decimal(0))  # an empty/NULL SUM phrased as "$0" is a fair reading
+    # ISO dates are checked whole (not as 2026, -03, -12) against dates in the result/question
+    dates_ok = set(ISO_DATE.findall(question)) | {d for c in cells for d in ISO_DATE.findall(c)}
+    bad = [d for d in ISO_DATE.findall(answer) if d not in dates_ok]
+    answer = ISO_DATE.sub(" ", LIST_MARKER.sub("", answer))  # list numbering isn't a claim
+    return sorted(bad + [str(n) for n in numbers(answer) if abs(n) not in allowed])
+
+
+LIST_MARKER = re.compile(r"(?m)^\s*\d{1,3}[.)]\s+|(?<=\s)\d{1,3}\.\s+(?=\d{4}-\d{2}-\d{2})")
+ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
 ANSWER_PROMPT = """Question: {question}
