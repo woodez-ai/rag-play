@@ -84,6 +84,21 @@ def test_retry_feeds_error_back(monkeypatch):
     assert ans.final.columns == ["n"]
 
 
+def test_empty_result_is_never_phrased_by_the_llm(monkeypatch):
+    replies = iter(["```sql\nSELECT SUM(amount) AS t FROM transactions WHERE txn_date < '2000-01-01'\n```",
+                    "The total was $2543.75."])  # what the LLM would say if asked
+    calls = []
+
+    def fake_chat(prompt, model, schema=None, think=False):
+        calls.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(text2sql, "_chat", fake_chat)
+    with db.connect_owner(db.TEST_SCHEMA) as conn:
+        ans = text2sql.ask(conn, "spend in 1999?", today=date(2026, 11, 13))
+    assert ans.text == text2sql.NO_DATA_TEXT and len(calls) == 1
+
+
 def test_unsafe_sql_is_refused_not_run(monkeypatch):
     replies = iter(["```sql\nDELETE FROM statements\n```"] * 3 + ["no answer"])
     monkeypatch.setattr(text2sql, "_chat", lambda *a, **k: next(replies))

@@ -79,6 +79,30 @@ def test_query_database_gets_the_users_question(conn, monkeypatch):
     assert ans.tools == ["query_database"] and ans.final.columns == ["n"]
 
 
+@pytest.mark.parametrize("q,routed", [
+    ("How much did I spend on dining in Q2 2026?", True),
+    ("How many coffee purchases did I make?", True),
+    ("What was my single largest purchase?", True),
+    ("Which month had my highest spending?", True),
+    ("How much interest was I charged in 2025?", True),
+    ("Show me my coffee purchases in March 2026.", False),
+    ("Which subscriptions do I pay for regularly?", False),
+    ("Which of my subscriptions went up in price?", False),
+    ("Were there any duplicate charges?", False),
+    ("What is my credit score?", False),
+])
+def test_calculation_router(q, routed):
+    assert bool(agent.CALC_RE.search(q) and not agent.ANOMALY_RE.search(q)) is routed
+
+
+def test_calculation_goes_straight_to_sql(conn, monkeypatch):
+    """No agent turn at all: the LLM never gets to pick find_transactions for a total."""
+    seen = script(monkeypatch, sql_replies=["```sql\nSELECT count(*) AS n FROM transactions\n```",
+                                            "There are 3 transactions."])
+    ans = agent.ask(conn, "How many transactions do I have?", today=TODAY)
+    assert seen == [] and ans.tools == ["query_database"] and ans.final.columns == ["n"]
+
+
 def test_find_returns_rows_with_ids(conn, monkeypatch):
     script(monkeypatch, [call("find_transactions", merchant="safeway")], "Here they are.")
     ans = agent.ask(conn, "Show my Safeway purchases", today=TODAY)
@@ -89,7 +113,7 @@ def test_find_returns_rows_with_ids(conn, monkeypatch):
 
 def test_unknown_find_arguments_are_refused(conn, monkeypatch):
     seen = script(monkeypatch, [call("find_transactions", sort="amount", limit=1)], "Use the other tool.")
-    ans = agent.ask(conn, "Largest purchase?", today=TODAY)
+    ans = agent.ask(conn, "Show my top Safeway purchase", today=TODAY)  # not routed: goes to the agent
     assert ans.calls[0].error and "query_database" in ans.calls[0].error
     assert "ERROR" in seen[1][-1]["content"]  # the error is fed back to the model
 
@@ -109,10 +133,10 @@ def test_unsupported_number_is_flagged(conn, monkeypatch):
 
 
 def test_followup_is_rewritten(conn, monkeypatch):
-    seen = script(monkeypatch, "How much did I spend on dining in April 2026?", "No data for April.")
+    seen = script(monkeypatch, "Show me my dining purchases in April 2026.", "No data for April.")
     ans = agent.ask(conn, "and in April?", today=TODAY,
-                    history=[("How much did I spend on dining in March 2026?", "$100.")])
-    assert ans.standalone == "How much did I spend on dining in April 2026?"
+                    history=[("Show me my dining purchases in March 2026.", "Here they are.")])
+    assert ans.standalone == "Show me my dining purchases in April 2026."
     assert "and in April?" in seen[0][0]["content"]  # rewrite prompt saw the follow-up
 
 

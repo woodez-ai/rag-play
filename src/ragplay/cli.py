@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ragplay import agent, categorize, db, evaluate, ingest, store, text2sql
+from ragplay import agent, anomalies, categorize, db, evaluate, ingest, store, text2sql
 
 app = typer.Typer(no_args_is_help=True, help="Credit card statement analyst (local RAG).")
 db_app = typer.Typer(no_args_is_help=True, help="Database setup and checks.")
@@ -194,6 +194,64 @@ def chat_cmd(
                 ans = agent.ask(conn, q, model=model, history=history)
             _print_agent_answer(ans, verbose)
             history.append((ans.standalone, ans.text))
+
+
+def _reader(schema: str):
+    return db.connect_reader() if schema == db.SCHEMA else db.connect_owner(schema)
+
+
+def _table(cols: list[str], rows: list[tuple]) -> None:
+    table = Table(*cols)
+    for r in rows:
+        table.add_row(*("" if v is None else text2sql._fmt(v) for v in r))
+    console.print(table)
+
+
+@app.command("recurring")
+def recurring_cmd(category: str = typer.Option(None), all_: bool = typer.Option(
+        False, "--all", help="Include series that have stopped."),
+        schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Recurring charges (subscriptions, bills) with price changes and next expected date."""
+    with _reader(schema) as conn:
+        series = anomalies.detect_recurring(conn, category=category)
+    if not all_:
+        series = [s for s in series if s.active]
+    _table(*anomalies.recurring_rows(series))
+    console.print(f"{len(series)} series; {sum(s.increased for s in series)} with a price increase.")
+
+
+@app.command("duplicates")
+def duplicates_cmd(days: int = typer.Option(0, help="Max days apart (0 = same day)."),
+                   schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Possible duplicate charges: same merchant and amount within --days."""
+    with _reader(schema) as conn:
+        _table(*anomalies.duplicate_rows(anomalies.find_duplicates(conn, days=days), conn))
+
+
+@app.command("outliers")
+def outliers_cmd(date_from: str = typer.Option(None, "--from"), date_to: str = typer.Option(None, "--to"),
+                 schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Unusually large purchases compared with your own history."""
+    from datetime import date
+    day = lambda s: date.fromisoformat(s) if s else None
+    with _reader(schema) as conn:
+        _table(*anomalies.outlier_rows(anomalies.spend_outliers(conn, date_from=day(date_from),
+                                                                date_to=day(date_to))))
+
+
+@app.command("review")
+def review_cmd(month: str = typer.Option(None, help="YYYY-MM (default: last full month)."),
+               facts: bool = typer.Option(False, "--facts", help="Also print the computed facts."),
+               model: str = typer.Option(agent.MODEL), schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Monthly review: facts computed in code, written up by the LLM."""
+    import json
+    with _reader(schema) as conn, console.status("reviewing..."):
+        f, text, unsupported = agent.review(conn, month, model=model)
+    if facts:
+        console.print_json(json.dumps(f, default=str))
+    console.print(f"[bold]Review of {f['month']}[/]\n{text}")
+    if unsupported:
+        console.print(f"[yellow]Warning: not in the computed facts: {', '.join(unsupported)}[/]")
 
 
 @app.command("eval")

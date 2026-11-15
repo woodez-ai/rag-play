@@ -219,6 +219,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - `spend_outliers`: per-category z-score or IQR against your own history; new merchants with large first charges.
 - The LLM produces a "monthly review": what changed, new subscriptions, things worth checking.
 - **Checkpoint:** finds the subscriptions you know you have, plus at least one you'd forgotten (that's the fun part).
+- ✅ **Built 2026-11-15** → [notes/phase8-anomalies.md](notes/phase8-anomalies.md). Synthetic: exactly the 5 planted recurring charges, the Netflix increase on the right date, and the planted duplicate. Real: 19 series (6 active), 1 increase, 17 outliers (~1/month), 1 same-day duplicate. **Eval: real 32/32, sample 16/16, 100% faithful.** On the way: more tools made routing worse (27/32), fixed with a deterministic calculation router; an empty result was phrased as "$2543.75 in 2019" (empty results are no longer phrased by the LLM, and the scorer no longer passes it); a blank cell read as a price increase. **Open:** owner checks `rag recurring --all`.
 
 ## Phase 9 — Rebuild with LlamaIndex
 **Concept:** Map hand-built parts onto framework abstractions.

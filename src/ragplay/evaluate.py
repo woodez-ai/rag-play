@@ -7,7 +7,8 @@ Truth is computed by running `ref_sql` at eval time, so the real question file c
 amounts (it is still gitignored: questions mention merchants). ref_sql conventions:
   total -> one row; every value in it must be in the answer (numbers exact to the cent)
   find  -> rows of (id, txn_date, amount): the expected transactions
-  list  -> rows whose first column is an expected name (merchant/category)
+  list  -> rows whose first column is an expected name (merchant/category); may be empty
+           ("none"). Scored on the names the ANSWER mentions.
   unanswerable -> no ref_sql; the system must say there's no data (or decline)
 
 Metrics (all checked in code, never by an LLM):
@@ -34,7 +35,8 @@ import psycopg
 
 from ragplay import text2sql
 
-TOOL_LABEL = {"query_database": "sql", "find_transactions": "search"}
+TOOL_LABEL = {"query_database": "sql", "find_transactions": "search", "detect_recurring": "anomaly",
+              "find_duplicates": "anomaly", "spend_outliers": "anomaly"}
 EVAL_TODAY = date(2026, 11, 14)  # fixed so "last month" means the same thing on every run
 ROOT = Path(__file__).resolve().parents[2]
 SETS = {"real": ROOT / "eval/questions.jsonl", "sample": ROOT / "eval/questions.sample.jsonl"}
@@ -139,6 +141,37 @@ def score_find(expected: list[tuple], final) -> tuple[float, float]:
     return precise / len(got), (len(found) / len(want) if want else 1.0)
 
 
+NEGATION = re.compile(r"\b(no|not|none|unchanged|didn't|did not|same|stayed|remained)\b")
+
+
+CHANGE_Q = re.compile(r"\b(went up|go up|increase|decrease|chang|duplicate|unusual)", re.I)
+
+
+def score_list_answer(expected: list[str], answer: str, known: list[str],
+                      question: str = "") -> tuple[float, float]:
+    """End to end, like totals: which known names (merchants, categories) does the ANSWER
+    mention? precision = mentioned names that are expected; recall = expected names mentioned.
+    An empty truth ("none went up") passes only if the answer names nothing.
+    Needed because tools like detect_recurring return every series, so the rows alone can't
+    say which ones the answer picked."""
+    exp = {e.lower() for e in expected}
+    # For "which went up / which are duplicates" questions, a line saying a name did NOT qualify
+    # ("Apple: no price change") isn't a claim about it. For other questions the same words are
+    # just detail ("Apple - monthly, no price change" still answers "which do I pay regularly").
+    claims = answer.lower()
+    if CHANGE_Q.search(question):
+        claims = "\n".join(line for line in re.split(r"\n|(?<=[.;])\s+", claims)
+                           if not NEGATION.search(line))
+    mentioned = {n.lower() for n in known
+                 if re.search(rf"(?<![\w']){re.escape(n.lower())}(?![\w'])", claims)}
+    # a name that contains another mentioned name wins ("Uber Eats" over "Uber")
+    mentioned = {m for m in mentioned if not any(m != o and m in o for o in mentioned)}
+    hits = mentioned & exp
+    precision = len(hits) / len(mentioned) if mentioned else (1.0 if not exp else 0.0)
+    recall = len(hits) / len(exp) if exp else 1.0
+    return precision, recall
+
+
 def score_list(expected: list[str], final) -> tuple[float, float]:
     """Distinct names from the result's merchant (or category) column, else its first column,
     so transaction rows from find_transactions (id first) are scored by their merchants."""
@@ -154,6 +187,10 @@ def score_list(expected: list[str], final) -> tuple[float, float]:
 
 
 def declined(final, answer: str) -> bool:
+    """Declined = said there's nothing, and did NOT state an amount. An empty result alone isn't
+    enough: the LLM once phrased an empty result as "The total spent in 2019 was $2543.75"."""
+    if any(abs(n) > 0 for n in text2sql.numbers(" ".join(re.findall(r"\$\s?[\d,]+(?:\.\d+)?", answer)))):
+        return False
     empty = final is None or not final.rows or all(v in (None, 0) for v in final.rows[0])
     return empty or bool(NO_DATA.search(answer))
 
@@ -226,7 +263,14 @@ def evaluate(conn: psycopg.Connection, questions: list[dict], *, model: str = te
             r.precision, r.recall = score_find([tuple(x[:3]) for x in ref_rows], final)
             r.passed = r.precision == 1.0 and r.recall == 1.0
         elif q["type"] == "list":
-            r.precision, r.recall = score_list([x[0] for x in ref_rows], final)
+            # compare like with like: category answers against category names, merchant answers
+            # against merchant names ("subscriptions" in a merchant list is not a claimed item)
+            cats = [x[0] for x in conn.execute(
+                "SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL")]
+            expected = [x[0] for x in ref_rows]
+            is_cat = bool(expected) and all(e in cats for e in expected)
+            known = cats if is_cat else [x[0] for x in conn.execute("SELECT merchant FROM merchant_categories")]
+            r.precision, r.recall = score_list_answer(expected, ans.text, known, q["question"])
             r.passed = r.precision == 1.0 and r.recall == 1.0
         elif q["type"] == "unanswerable":
             r.passed = declined(final, ans.text)
