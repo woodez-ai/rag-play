@@ -28,7 +28,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 import psycopg
@@ -81,7 +81,10 @@ def _norm(v):
     if isinstance(v, date):
         return v.isoformat()
     if isinstance(v, (int, float, Decimal)):
-        return abs(Decimal(str(v))).quantize(CENT, ROUND_HALF_UP)  # like Postgres ROUND
+        try:
+            return abs(Decimal(str(v))).quantize(CENT, ROUND_HALF_UP)  # like Postgres ROUND
+        except InvalidOperation:  # NaN/inf (a framework result had one): not a matchable number
+            return str(v).lower()
     return str(v).strip().lower()
 
 
@@ -214,9 +217,10 @@ def ensure_sample(conn: psycopg.Connection, fake_dir: Path = ROOT / "data/fake")
 
 
 def evaluate(conn: psycopg.Connection, questions: list[dict], *, model: str = text2sql.MODEL,
-             system: str = "sql", progress=None, reconnect=None) -> list[Result]:
+             system: str = "sql", progress=None, reconnect=None, assistant=None) -> list[Result]:
     """system: 'sql' = text-to-SQL for every question (Phase 5 baseline);
-               'agent' = the Phase 7 tool-calling agent (it chooses the tool).
+               'agent' = the hand-built tool-calling agent (Phases 7-8);
+               'llamaindex' = the Phase 9 LlamaIndex rebuild (pass `assistant`).
     reconnect: callable returning a fresh connection. The connection is pinged before each
     question and replaced if the server dropped it (a laptop that sleeps mid-run), so one
     dropped connection doesn't fail every remaining question."""
@@ -233,8 +237,9 @@ def evaluate(conn: psycopg.Connection, questions: list[dict], *, model: str = te
         t0 = time.time()
         try:
             ref_cols, ref_rows = (text2sql.run_sql(conn, q["ref_sql"]) if q.get("ref_sql") else ([], []))
-            if system == "agent":
-                ans = agent.ask(conn, q["question"], model=model, today=EVAL_TODAY)
+            if system in ("agent", "llamaindex", "llamaindex-tuned"):
+                ans = (assistant.ask(q["question"], today=EVAL_TODAY) if system.startswith("llamaindex")
+                       else agent.ask(conn, q["question"], model=model, today=EVAL_TODAY))
                 r.attempts = len(ans.calls)
                 r.sql_valid = ans.sql_first_try if ans.sql_first_try is not None else None
                 r.tools = ",".join(TOOL_LABEL.get(t, t) for t in ans.tools) or "none"

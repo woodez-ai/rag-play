@@ -36,6 +36,10 @@ def test_total_null_truth_fails_instead_of_crashing():
     assert score_total([None], final(["t"], [(D("1"),)]), "1") == (False, False)
 
 
+def test_total_nan_in_result_fails_instead_of_crashing():
+    assert score_total([D("1.00")], final(["t"], [(float("nan"),)]), "1.00")[1] is False
+
+
 def test_total_text_value():
     f = final(["category"], [("dining",)])
     assert score_total(["dining"], f, "You spent the most on Dining.") == (True, True)

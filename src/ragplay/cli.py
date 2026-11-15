@@ -254,11 +254,31 @@ def review_cmd(month: str = typer.Option(None, help="YYYY-MM (default: last full
         console.print(f"[yellow]Warning: not in the computed facts: {', '.join(unsupported)}[/]")
 
 
+@app.command("li-index")
+def li_index_cmd(schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Phase 9: (re)build the LlamaIndex PGVectorStore index (schema ragplay_li)."""
+    from ragplay_llamaindex.app import build_index
+    with console.status("embedding every transaction with LlamaIndex..."):
+        n = build_index(schema)
+    console.print(f"LlamaIndex index for {schema}: {n} nodes.")
+
+
+@app.command("li-ask")
+def li_ask_cmd(question: str, verbose: bool = typer.Option(False, "-v"),
+               schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Phase 9: ask the LlamaIndex rebuild (compare with `rag chat`)."""
+    from ragplay_llamaindex.app import LlamaIndexAssistant
+    with console.status("thinking (LlamaIndex)..."):
+        ans = LlamaIndexAssistant(schema).ask(question)
+    _print_agent_answer(ans, verbose)
+
+
 @app.command("eval")
 def eval_cmd(
     set_name: str = typer.Option("real", "--set", help="real (eval/questions.jsonl) | sample"),
     ids: str = typer.Option(None, help="Comma-separated question ids to run."),
-    system: str = typer.Option("agent", help="agent (Phase 7) | sql (Phase 5 baseline)"),
+    system: str = typer.Option("agent", help="agent (hand-built) | sql (Phase 5 baseline) | "
+                                             "llamaindex (Phase 9 rebuild; needs `rag li-index`)"),
     model: str = typer.Option(text2sql.MODEL),
 ) -> None:
     """Run the eval set, print scores, save the run to eval/runs/ (gitignored).
@@ -292,8 +312,13 @@ def eval_cmd(
         return conns[-1]
 
     try:
+        assistant = None
+        if system.startswith("llamaindex"):
+            from ragplay_llamaindex.app import LlamaIndexAssistant
+            assistant = LlamaIndexAssistant(db.SCHEMA if real else db.SAMPLE_SCHEMA,
+                                            tuned=system == "llamaindex-tuned")
         results = evaluate.evaluate(conns[0], questions, model=model, system=system,
-                                    progress=show, reconnect=reconnect)
+                                    progress=show, reconnect=reconnect, assistant=assistant)
     finally:
         for c in conns:
             c.close()
