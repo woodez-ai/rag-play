@@ -210,6 +210,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - **Conversational memory:** `rag chat` REPL; follow-ups like "and in April?" are rewritten into standalone questions.
 - Compare against Phase 5: does routing beat "always SQL"? Is `llama3.2:3b` good enough?
 - **Checkpoint:** one CLI handles all three question types; eval scores recorded.
+- ✅ **Done 2026-11-15** → [notes/phase7-agent.md](notes/phase7-agent.md). Tools: `query_database()` (Phase 5 text-to-SQL on the user's own question; no arguments, because the model paraphrased away "on my statement"), `find_transactions(filters)` (rows, newest first), and declining. **Real 23/31 → 30/31** (finds 2/7 → 7/7, unanswerable 2/3 → 3/3, totals 19/19); sample 12/16 → 15/16. Remaining failures are Phase 8 anomaly questions. `rag chat` rewrites follow-ups. Fixes came from failures: deterministic filter relaxation, category definitions in the prompt, unknown tool arguments as errors, newest-first rows, zero vs no data. Infra: autocommit + keepalives + idle-transaction timeout after a sleeping laptop held locks; eval reconnects; sample eval in its own schema. llama3.2:3b comparison not done (optional).
 
 ## Phase 8 — Anomalies and subscriptions
 **Concept:** Compute deterministically; let the LLM explain.

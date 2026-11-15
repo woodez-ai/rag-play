@@ -75,6 +75,8 @@ FILTERS = """
     AND (%(min_amount)s::numeric IS NULL OR t.amount >= %(min_amount)s)
     AND (%(max_amount)s::numeric IS NULL OR t.amount <= %(max_amount)s)
     AND (%(category)s::text IS NULL OR t.category = %(category)s)
+    AND (%(merchant)s::text IS NULL OR t.merchant ILIKE '%%' || %(merchant)s || '%%')
+    AND (%(category)s::text IS NOT NULL OR t.type <> 'payment')
 """
 
 # Each method ranks the *filtered* transactions; RRF fuses the ranks. One round trip.
@@ -121,12 +123,37 @@ def search(conn: psycopg.Connection, query: str, *, mode: str = "hybrid",
            model: str = DEFAULT_MODEL, k: int = 10, date_from: date | None = None,
            date_to: date | None = None, min_amount: Decimal | None = None,
            max_amount: Decimal | None = None, category: str | None = None,
-           text_weight: float = TEXT_WEIGHT) -> list[Hit]:
-    """mode: 'vector' (embeddings only), 'text' (full-text + trigram), 'hybrid' (all, RRF)."""
+           merchant: str | None = None, text_weight: float = TEXT_WEIGHT) -> list[Hit]:
+    """mode: 'vector' (embeddings only), 'text' (full-text + trigram), 'hybrid' (all, RRF).
+    Payments are excluded unless category='payment'."""
     if mode not in ("vector", "text", "hybrid"):
         raise ValueError(f"unknown mode {mode!r}")
     qvec = embed([query], model=model, kind="query")[0] if mode != "text" else np.zeros(1, np.float32)
     params = dict(qvec=qvec, model=model, text=query, k=k, date_from=date_from, date_to=date_to,
                   min_amount=min_amount, max_amount=max_amount, category=category,
-                  use_vec=mode != "text", use_text=mode != "vector", text_weight=text_weight)
+                  merchant=merchant, use_vec=mode != "text", use_text=mode != "vector",
+                  text_weight=text_weight)
     return [Hit(*r) for r in conn.execute(HYBRID_SQL, params).fetchall()]
+
+
+FIND_SQL = f"""
+SELECT t.id, t.txn_date, t.merchant, t.description_raw, t.amount, t.category, 0.0
+FROM transactions t WHERE {FILTERS}
+ORDER BY t.txn_date DESC, t.id DESC LIMIT %(k)s  -- newest first: "most recent" must be visible
+"""
+
+
+def find(conn: psycopg.Connection, *, text: str | None = None, merchant: str | None = None,
+         category: str | None = None, date_from: date | None = None, date_to: date | None = None,
+         min_amount: Decimal | None = None, max_amount: Decimal | None = None,
+         k: int = 100, model: str = DEFAULT_MODEL) -> list[Hit]:
+    """Transactions matching structured filters (all rows, newest first). With `text`, rank by
+    hybrid search instead and return the top k. Structured filters are exact; text ranking
+    always returns k rows, so prefer filters when a category or merchant fits."""
+    if text:
+        return search(conn, text, model=model, k=k, date_from=date_from, date_to=date_to,
+                      min_amount=min_amount, max_amount=max_amount, category=category,
+                      merchant=merchant)
+    params = dict(k=k, date_from=date_from, date_to=date_to, min_amount=min_amount,
+                  max_amount=max_amount, category=category, merchant=merchant)
+    return [Hit(*r) for r in conn.execute(FIND_SQL, params).fetchall()]
