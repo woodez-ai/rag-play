@@ -149,3 +149,72 @@ def test_csrf_and_host_are_enforced(data, tmp_path, monkeypatch):
 def test_pages_set_security_headers(data, client):
     r = client.get("/ask")
     assert "script-src 'self'" in r["Content-Security-Policy"] and r["X-Frame-Options"] == "DENY"
+
+
+# ---------------------------------------------------------------- PR 2: spending, insights, budgets
+
+def test_spending_filters_match_ground_truth(data, client):
+    _, truth = data
+    r = client.get("/spending?category=groceries&from=2025-12-01&to=2025-12-31")
+    want = [t for t in truth if t["category"] == "groceries" and t["txn_date"].startswith("2025-12")
+            and t["type"] in ("purchase", "refund")]
+    assert r.context["count"] == len(want) and r.context["total"] == spent(truth, "2025-12", "groceries")
+    assert not r.context["ranked"]
+
+
+def test_spending_paginates_newest_first(data, client):
+    r = client.get("/spending")
+    rows = r.context["rows"]
+    assert len(rows) == 50 and r.context["pages"] > 1
+    assert [h.txn_date for h in rows] == sorted((h.txn_date for h in rows), reverse=True)
+    assert client.get("/spending?page=999").context["page"] == r.context["pages"]
+
+
+def test_spending_text_search_is_ranked(data, client, monkeypatch):
+    from ragplay import store
+    got = {}
+    monkeypatch.setattr(store, "find", lambda conn, **kw: got.update(kw) or [])
+    r = client.get("/spending?q=coffee&category=nope&min=abc")
+    assert got["text"] == "coffee" and got["k"] == 50 and got["category"] is None and got["min_amount"] is None
+    assert r.context["ranked"]
+
+
+def test_insight_tabs(data, client, monkeypatch):
+    for path in ("/insights", "/insights/subscriptions?all=1&changed=1", "/insights/duplicates?days=3",
+                 "/insights/duplicates?days=99", "/insights/unusual?from=2025-12-01", "/insights/review"):
+        assert client.get(path).status_code == 200, path
+    assert client.get("/insights/nope").status_code == 404
+    assert client.get("/insights/duplicates?days=99").context["days"] == 0
+    monkeypatch.setattr(agent, "review", lambda conn, month, model: (
+        {"month": "2025-12", "total_spend": D("10")}, "- **Dining** went up", []))
+    r = client.get("/insights/review/run?month=2025-12")
+    assert b"<li><strong>Dining</strong> went up</li>" in r.content
+
+
+def test_budget_edit_flow(data, client):
+    c, _ = data
+    hx = {"HTTP_HX_REQUEST": "true"}
+    r = client.post("/budgets/set", {"category": "groceries", "amount": "$1,250", "month": "2025-12"}, **hx)
+    assert dict(budgets.list_budgets(c))["groceries"] == D("1250.00") and b'id="budgets"' in r.content
+    r = client.post("/budgets/set", {"category": "groceries", "amount": "lots", "month": "2025-12"}, **hx)
+    assert r.context["error"] and dict(budgets.list_budgets(c))["groceries"] == D("1250.00")
+    r = client.post("/budgets/set", {"category": "made-up", "amount": "5"}, **hx)
+    assert "unknown category" in r.context["error"]
+    assert "groceries" not in client.get("/budgets").context["addable"]
+    r = client.post("/budgets/remove", {"category": "groceries", "month": "2025-12"})
+    assert r.status_code == 302 and "groceries" not in dict(budgets.list_budgets(c))
+
+
+def test_md_filter_escapes_model_output():
+    from ragplay_web.templatetags.ragfmt import md
+    html = md("Hi <script>x</script> **$5**\n- one\n- **two**\n\nend")
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert html == ("<p>Hi &lt;script&gt;x&lt;/script&gt; <strong>$5</strong></p>"
+                    "<ul><li>one</li><li><strong>two</strong></li></ul><p>end</p>")
+
+
+def test_review_facts_include_difference(data):
+    from ragplay import anomalies
+    c, _ = data
+    f = anomalies.monthly_review(c, "2026-01")
+    assert f["difference_from_average"] == f["total_spend"] - f["previous_3_months_average"]

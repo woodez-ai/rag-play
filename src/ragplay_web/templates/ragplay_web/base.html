@@ -17,7 +17,7 @@
     <a class="brand" href="{% url 'dashboard' %}"><span class="logo"></span>ragplay</a>
     <nav>
       {% for name, text in nav %}
-        <a href="{% url name %}" class="{% if request.resolver_match.url_name == name %}active{% endif %}">
+        <a href="{% url name %}" class="{% if section == name %}active{% endif %}">
           <span class="icon icon-{{ name }}"></span>{{ text }}</a>
       {% endfor %}
     </nav>

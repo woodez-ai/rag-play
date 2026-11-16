@@ -67,3 +67,9 @@ def trend(conn: psycopg.Connection, end_month: str, n: int = 12) -> list[tuple[s
         f"""SELECT to_char(txn_date, 'YYYY-MM'), sum(amount) FROM transactions
             WHERE {SPEND} AND txn_date >= %s AND txn_date < %s GROUP BY 1""", (start, nxt)).fetchall())
     return [(m, got.get(m, Decimal(0))) for m in ms]
+
+
+def categories(conn: psycopg.Connection) -> list[str]:
+    """Categories that have transactions, alphabetical."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL ORDER BY 1")]

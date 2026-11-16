@@ -1,0 +1,25 @@
+{% load ragfmt %}
+<div class="review">
+  <h3>{{ facts.month|month_name }}</h3>
+  <div class="review-stats">
+    <div><span class="muted small">Spent</span><b class="num">{{ facts.total_spend|money }}</b></div>
+    {% if facts.previous_3_months_average %}
+    <div><span class="muted small">3-month average</span><b class="num">{{ facts.previous_3_months_average|money }}</b></div>
+    {% endif %}
+  </div>
+  <div class="answer review-text">{{ text|md }}</div>
+  {% if unsupported %}<div class="warn">⚠ Some numbers aren't in the computed facts: {{ unsupported|join:", " }}</div>{% endif %}
+  {% if facts.category_changes_vs_3_month_average %}
+  <details class="how">
+    <summary>The facts behind this</summary>
+    <table class="mini">
+      <thead><tr><th>Category</th><th>This month</th><th>Usual</th><th>Difference</th></tr></thead>
+      <tbody>{% for c in facts.category_changes_vs_3_month_average %}
+        <tr><td>{{ c.category|label }}</td><td>{{ c.this_month|money }}</td><td>{{ c.usual|money }}</td><td>{{ c.difference|money }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+    {% if facts.new_merchants %}<p class="small"><b>New merchants:</b> {% for m in facts.new_merchants %}{{ m.merchant }} ({{ m.spent|money }}){% if not forloop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+    {% if facts.price_changes %}<p class="small"><b>Price changes:</b> {% for p in facts.price_changes %}{{ p.merchant }} {{ p.old|money }} → {{ p.new|money }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  </details>
+  {% endif %}
+</div>

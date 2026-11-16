@@ -1,8 +1,8 @@
-<div class="turn">
+{% load ragfmt %}<div class="turn">
   <div class="msg msg-user">{{ t.question }}</div>
   <div class="msg msg-bot">
     {% if t.standalone and t.standalone != t.question %}<div class="understood">Understood as: {{ t.standalone }}</div>{% endif %}
-    <div class="answer">{{ t.answer|linebreaksbr }}</div>
+    <div class="answer">{{ t.answer|md }}</div>
     {% if t.unsupported %}
       <div class="warn">⚠ Some numbers aren't in any tool result: {{ t.unsupported|join:", " }}</div>
     {% endif %}

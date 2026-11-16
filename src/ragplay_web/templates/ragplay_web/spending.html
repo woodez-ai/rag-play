@@ -1,0 +1,67 @@
+{% extends "ragplay_web/base.html" %}{% load ragfmt %}
+{% block title %}Spending{% endblock %}
+{% block heading %}Spending{% endblock %}
+{% block content %}
+<form class="card filters" method="get" action="{% url 'spending' %}"
+      hx-get="{% url 'spending' %}" hx-target="#results" hx-select="#results" hx-swap="outerHTML"
+      hx-push-url="true" hx-trigger="submit, change from:select, change from:input[type=date]">
+  <div class="search-box">
+    <span class="icon icon-search"></span>
+    <input type="search" name="q" value="{{ f.q }}" placeholder="Search by meaning, e.g. “coffee”, “flights”, “hardware store”"
+           aria-label="Search">
+    <button class="btn btn-primary">Search</button>
+  </div>
+  <div class="filter-row">
+    <label>Category
+      <select name="category">
+        <option value="">All</option>
+        {% for c in categories %}<option value="{{ c }}" {% if c == f.category %}selected{% endif %}>{{ c|label }}</option>{% endfor %}
+      </select></label>
+    <label>Merchant <input name="merchant" value="{{ f.merchant }}" placeholder="any"></label>
+    <label>From <input type="date" name="from" value="{{ f.from|date:'Y-m-d' }}"></label>
+    <label>To <input type="date" name="to" value="{{ f.to|date:'Y-m-d' }}"></label>
+    <label>Min $ <input name="min" inputmode="decimal" value="{{ f.min|default_if_none:'' }}" class="narrow"></label>
+    <label>Max $ <input name="max" inputmode="decimal" value="{{ f.max|default_if_none:'' }}" class="narrow"></label>
+    {% if filtered %}<a class="btn btn-ghost" href="{% url 'spending' %}">Clear</a>{% endif %}
+  </div>
+</form>
+
+<section id="results" class="card">
+  <div class="card-head">
+    {% if ranked %}
+      <h2>Top {{ count }} match{{ count|pluralize:"es" }} for “{{ f.q }}”</h2>
+      <span class="muted small">ranked by relevance · use filters for exact lists</span>
+    {% else %}
+      <h2>{{ count }} transaction{{ count|pluralize }}{% if capped %}+ (showing the newest {{ count }}){% endif %}</h2>
+      <span class="num"><span class="muted">Total</span> <b>{{ total|money }}</b></span>
+    {% endif %}
+  </div>
+  {% if rows %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="r">Amount</th></tr></thead>
+      <tbody>
+      {% for h in rows %}
+        <tr>
+          <td class="nowrap">{{ h.txn_date|date:"M j, Y" }}</td>
+          <td><a class="plain strong" href="{% url 'spending' %}?merchant={{ h.merchant|default:h.description_raw|urlencode }}">{{ h.merchant|default:h.description_raw }}</a>
+              <div class="muted small">{{ h.description_raw }}</div></td>
+          <td>{% if h.category %}<a class="cat cat-link" href="{% url 'spending' %}?category={{ h.category }}">{{ h.category|label }}</a>{% endif %}</td>
+          <td class="r num {% if h.amount < 0 %}refund{% endif %}">{{ h.amount|money }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if pages > 1 %}
+  <nav class="pager">
+    {% if page > 1 %}<a class="btn btn-ghost" href="?{{ query }}&page={{ page|add:-1 }}">← Newer</a>{% endif %}
+    <span class="muted">Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a class="btn btn-ghost" href="?{{ query }}&page={{ page|add:1 }}">Older →</a>{% endif %}
+  </nav>
+  {% endif %}
+  {% else %}
+    <p class="muted">No transactions match.</p>
+  {% endif %}
+</section>
+{% endblock %}

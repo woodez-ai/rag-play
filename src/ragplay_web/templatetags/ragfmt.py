@@ -1,7 +1,10 @@
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from django import template
+from django.utils.html import escape
+from django.utils.safestring import mark_safe
 
 register = template.Library()
 
@@ -31,6 +34,35 @@ def month_name(v: str) -> str:
         return datetime.strptime(v, "%Y-%m").strftime("%B %Y")
     except (TypeError, ValueError):
         return v or ""
+
+
+BOLD = re.compile(r"\*\*(.+?)\*\*")
+BULLET = re.compile(r"^\s*[-*•]\s+(.*)$")
+
+
+@register.filter
+def md(text: str) -> str:
+    """The little Markdown the local model writes: **bold** and '- ' bullet lists. Everything is
+    HTML-escaped first, so model output can never inject markup."""
+    out, items = [], []
+
+    def flush():
+        if items:
+            out.append("<ul>" + "".join(f"<li>{i}</li>" for i in items) + "</ul>")
+            items.clear()
+
+    for line in (text or "").splitlines():
+        html = BOLD.sub(r"<strong>\1</strong>", escape(line.strip()))
+        m = BULLET.match(line)
+        if m:
+            items.append(BOLD.sub(r"<strong>\1</strong>", escape(m.group(1).strip())))
+        elif html:
+            flush()
+            out.append(f"<p>{html}</p>")
+        else:
+            flush()
+    flush()
+    return mark_safe("".join(out))
 
 
 @register.filter

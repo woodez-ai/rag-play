@@ -45,7 +45,7 @@
       <div class="tile-sub">{{ budgets|length }} budget{{ budgets|length|pluralize }} set</div>
     {% else %}
       <div class="tile-value muted small">None set</div>
-      <div class="tile-sub">use <code>rag budget set</code></div>
+      <div class="tile-sub"><a href="{% url 'budgets' %}">Add a budget →</a></div>
     {% endif %}
   </div>
 </section>
@@ -58,12 +58,12 @@
 
 <div class="grid-2">
   <section class="card">
-    <div class="card-head"><h2>By category</h2></div>
+    <div class="card-head"><h2>By category</h2><a class="small" href="{% url 'spending' %}?from={{ month_start|date:'Y-m-d' }}&to={{ month_end|date:'Y-m-d' }}">All transactions →</a></div>
     <ul class="bars">
       {% for c, amount, pct in cats %}
         <li>
-          <div class="bar-label"><span>{{ c|label }}</span><span class="num">{{ amount|money }}</span></div>
-          <div class="bar"><div class="bar-fill" style="width: {{ pct|floatformat:1 }}%"></div></div>
+          <a class="bar-link" href="{% url 'spending' %}?category={{ c }}&from={{ month_start|date:'Y-m-d' }}&to={{ month_end|date:'Y-m-d' }}"><div class="bar-label"><span>{{ c|label }}</span><span class="num">{{ amount|money }}</span></div>
+          <div class="bar"><div class="bar-fill" style="width: {{ pct|floatformat:1 }}%"></div></div></a>
         </li>
       {% empty %}<li class="muted">No spending this month.</li>{% endfor %}
     </ul>
@@ -71,7 +71,7 @@
 
   <div class="stack">
     <section class="card">
-      <div class="card-head"><h2>Budgets</h2></div>
+      <div class="card-head"><h2>Budgets</h2><a class="small" href="{% url 'budgets' %}?month={{ month }}">Manage →</a></div>
       {% if budgets %}
         <ul class="bars">
           {% for b, pct in budgets %}
@@ -87,7 +87,7 @@
           {% endfor %}
         </ul>
       {% else %}
-        <p class="muted">No budgets yet. Set one from the terminal, e.g. <code>rag budget set dining 400</code>.</p>
+        <p class="muted">No budgets yet. <a href="{% url 'budgets' %}">Add one</a> to track a category or your total spending.</p>
       {% endif %}
     </section>
 

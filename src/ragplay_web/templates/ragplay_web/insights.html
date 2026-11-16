@@ -1,0 +1,117 @@
+{% extends "ragplay_web/base.html" %}{% load ragfmt %}
+{% block title %}Insights{% endblock %}
+{% block heading %}Insights{% endblock %}
+{% block content %}
+<nav class="tabs">
+  {% for key, text in tabs %}<a href="{% url 'insights_tab' key %}" class="{% if key == tab %}active{% endif %}">{{ text }}</a>{% endfor %}
+</nav>
+
+{% if tab == "subscriptions" %}
+  <section class="tiles tiles-3">
+    <div class="tile"><div class="tile-label">Active</div><div class="tile-value">{{ n_active }}</div>
+      <div class="tile-sub">recurring charges</div></div>
+    <div class="tile"><div class="tile-label">Per month</div><div class="tile-value">{{ per_month|money }}</div>
+      <div class="tile-sub">yearly charges spread over 12 months</div></div>
+    <div class="tile"><div class="tile-label">Price increases</div>
+      <div class="tile-value {% if n_increased %}up{% endif %}">{{ n_increased }}</div>
+      <div class="tile-sub">among active ones</div></div>
+  </section>
+  <section class="card">
+    <div class="card-head">
+      <h2>Recurring charges</h2>
+      <div class="toggles">
+        <a class="toggle {% if not show_all %}on{% endif %}" href="?{% if changed %}changed=1{% endif %}">Active</a>
+        <a class="toggle {% if show_all %}on{% endif %}" href="?all=1{% if changed %}&changed=1{% endif %}">Include stopped</a>
+        <span class="sep"></span>
+        <a class="toggle {% if changed %}on{% endif %}" href="?{% if show_all %}all=1&{% endif %}{% if not changed %}changed=1{% endif %}">Price changed</a>
+      </div>
+    </div>
+    {% if series %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Merchant</th><th>Every</th><th class="r">Amount</th><th>Since</th><th>Last</th><th>Next expected</th><th>Price change</th></tr></thead>
+      <tbody>
+      {% for s in series %}
+        <tr class="{% if not s.active %}dim{% endif %}">
+          <td><a class="plain strong" href="{% url 'spending' %}?merchant={{ s.merchant|urlencode }}">{{ s.merchant }}</a>
+              {% if s.category %}<div class="muted small">{{ s.category|label }}</div>{% endif %}</td>
+          <td>{% if s.cadence == "monthly" %}month{% else %}year{% endif %}</td>
+          <td class="r num">{{ s.amount|money }}</td>
+          <td class="nowrap">{{ s.first|date:"M Y" }}</td>
+          <td class="nowrap">{{ s.last|date:"M j, Y" }}</td>
+          <td class="nowrap">{% if s.active %}{{ s.next_expected|date:"M j" }}{% else %}<span class="pill pill-muted">stopped</span>{% endif %}</td>
+          <td>{% for ch in s.changes %}<div class="nowrap {% if ch.new > ch.old %}up{% else %}down{% endif %}">
+                {% if ch.new > ch.old %}▲{% else %}▼{% endif %} {{ ch.old|money }} → {{ ch.new|money }} <span class="muted small">{{ ch.on|date:"M Y" }}</span></div>
+              {% empty %}<span class="muted">—</span>{% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<p class="muted">None found.</p>{% endif %}
+  </section>
+
+{% elif tab == "duplicates" %}
+  <section class="card">
+    <div class="card-head">
+      <h2>Possible duplicate charges</h2>
+      <div class="toggles">
+        {% for d, text in day_options %}
+          <a class="toggle {% if days == d %}on{% endif %}" href="?days={{ d }}">{{ text }}</a>{% endfor %}
+      </div>
+    </div>
+    <p class="muted small">Same merchant and same amount{% if days %} within {{ days }} day{{ days|pluralize }}{% else %} on the same day{% endif %}. Wider windows mostly catch regular purchases (the same coffee two days running).</p>
+    {% if pairs %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Date</th><th>Merchant</th><th class="r">Amount</th><th>Days apart</th></tr></thead>
+      <tbody>{% for p in pairs %}
+        <tr><td class="nowrap">{{ p.1|date:"M j, Y" }}</td>
+            <td><a class="plain strong" href="{% url 'spending' %}?merchant={{ p.2|urlencode }}&from={{ p.1|date:'Y-m-d' }}&to={{ p.1|date:'Y-m-d' }}">{{ p.2 }}</a></td>
+            <td class="r num">{{ p.3|money }}</td><td>{{ p.5 }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="ok-line">✓ No duplicates found.</p>{% endif %}
+  </section>
+
+{% elif tab == "unusual" %}
+  <section class="card">
+    <div class="card-head">
+      <h2>Unusually large purchases</h2>
+      <form method="get" class="inline-form">
+        <label>From <input type="date" name="from" value="{{ date_from|date:'Y-m-d' }}"></label>
+        <label>To <input type="date" name="to" value="{{ date_to|date:'Y-m-d' }}"></label>
+        <button class="btn">Apply</button>
+        {% if date_from or date_to %}<a class="btn btn-ghost" href="?">All time</a>{% endif %}
+      </form>
+    </div>
+    <p class="muted small">More than 3× your usual purchase in that category, and in your top 2% of purchases overall.</p>
+    {% if outliers %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="r">Amount</th><th>Why</th></tr></thead>
+      <tbody>{% for o in outliers %}
+        <tr><td class="nowrap">{{ o.txn_date|date:"M j, Y" }}</td>
+            <td><a class="plain strong" href="{% url 'spending' %}?merchant={{ o.merchant|urlencode }}">{{ o.merchant }}</a></td>
+            <td><span class="cat">{{ o.category|label }}</span></td>
+            <td class="r num">{{ o.amount|money }}</td><td class="muted small">{{ o.reason }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="ok-line">✓ Nothing unusual in this period.</p>{% endif %}
+  </section>
+
+{% else %}
+  <section class="card">
+    <div class="card-head">
+      <h2>Monthly review</h2>
+      <form class="inline-form" hx-get="{% url 'review_run' %}" hx-target="#review" hx-indicator="#review-wait"
+            hx-disabled-elt="find button">
+        <select name="month" aria-label="Month">
+          <option value="">Last full month</option>
+          {% for m in months %}<option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m|month_name }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-primary">Write review</button>
+      </form>
+    </div>
+    <p class="muted small">The facts are computed in code; the local model writes them up. Takes about 20 seconds.</p>
+    <div id="review-wait" class="thinking"><span class="spinner"></span> Writing the review…</div>
+    <div id="review"></div>
+  </section>
+{% endif %}
+{% endblock %}
