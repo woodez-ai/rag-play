@@ -23,7 +23,7 @@ from decimal import Decimal
 import ollama
 import psycopg
 
-from ragplay import anomalies, store, text2sql
+from ragplay import anomalies, budgets, store, text2sql
 from ragplay.text2sql import Attempt
 
 MODEL = "qwen3:8b"
@@ -88,7 +88,18 @@ TOOLS = [
             "date_from": {"type": "string"}, "date_to": {"type": "string"}},
             "required": []}}},
 ]
-ANOMALY_TOOLS = {"detect_recurring", "find_duplicates", "spend_outliers"}
+TOOLS.append({"type": "function", "function": {
+    "name": "budget_status",
+    # Returns EVERY budget for the month. It used to take a category, and the model passed
+    # category='all' for "my budgets" ('all' = the total budget), so it missed dining going over.
+    "description": "Every monthly budget vs actual spending, computed in code: budget, spent, "
+                   "remaining, % used, projected month-end (if the data stops mid-month) and status "
+                   "(over / at risk / on track). Use for any question about budgets. The row with "
+                   "category 'all' is the budget for TOTAL spending.",
+    "parameters": {"type": "object", "properties": {
+        "month": {"type": "string", "description": "YYYY-MM; omit for the current month"}},
+        "required": []}}})
+ANOMALY_TOOLS = {"detect_recurring", "find_duplicates", "spend_outliers", "budget_status"}
 
 # What each category covers (same meanings Phase 3 used to assign them). Without this the model
 # mapped "hardware store" to 'shopping' instead of 'home'.
@@ -109,8 +120,9 @@ Rules:
   comparison or ranking; use find_transactions to show or list individual transactions.
 - Subscriptions, recurring charges: detect_recurring. Price increases: detect_recurring with
   price_increased_only=true (if it returns no rows, nothing went up). Duplicate charges:
-  find_duplicates. Unusual or unexpectedly large purchases: spend_outliers. These are computed
-  by code; report what they return and don't add your own judgement of what is recurring.
+  find_duplicates. Unusual or unexpectedly large purchases: spend_outliers. Budgets:
+  budget_status. These are computed by code; report what they return and don't add your own
+  judgement. If budget_status returns no rows, no budget is set for that.
 - Quote numbers exactly as the tools return them.
 - The data contains this card's transactions and its monthly statements (balances and totals
   of purchases, payments, fees and interest charged). Questions about those are answerable,
@@ -138,6 +150,7 @@ class ToolCall:
     rows: list[tuple] = field(default_factory=list)
     sql: str = ""
     error: str | None = None
+    seconds: float = 0.0
 
 
 @dataclass
@@ -226,7 +239,18 @@ def run_tool(conn: psycopg.Connection, name: str, args: dict, *, model: str, tod
             known = set(next(t for t in TOOLS if t["function"]["name"] == name)
                         ["function"]["parameters"]["properties"])
             args = {k: v for k, v in args.items() if k in known and v not in (None, "")}
-            if name == "detect_recurring":
+            if name == "budget_status":
+                month, items = budgets.status(conn, args.get("month") or None, today=today)
+                if items and all(b.data_through is None for b in items):
+                    # "this month" with no data yet read as "on track, nothing spent"
+                    last = conn.execute("SELECT max(txn_date) FROM transactions").fetchone()[0]
+                    call.error = (f"no transactions recorded for {month} (the data ends {last}); "
+                                  "budget status can't be judged for that month")
+                    return call
+                call.columns, call.rows = budgets.rows(items)
+                call.columns.insert(0, "month")
+                call.rows = [(month, *r) for r in call.rows]
+            elif name == "detect_recurring":
                 series = anomalies.detect_recurring(conn, category=args.get("category"))
                 if args.get("active_only"):
                     series = [s for s in series if s.active]
@@ -270,7 +294,8 @@ def _tool_text(call: ToolCall) -> str:
 REVIEW = """Write a short monthly credit card review for {month} from the FACTS below (JSON,
 computed by code). 4 to 8 bullet points, most important first: how total spending compares
 with the usual, the biggest category changes, price changes, new recurring charges, recurring
-charges that didn't appear, possible duplicates, unusual purchases, notable new merchants.
+charges that didn't appear, possible duplicates, unusual purchases, notable new merchants,
+budgets that are over or at risk.
 Rules: use ONLY these facts; copy numbers exactly; do not add, subtract or estimate anything;
 skip empty sections; end with at most two things worth checking.
 
@@ -305,8 +330,10 @@ CALC_RE = re.compile(
     r"\b(how much|how many|total|sum|average|avg|mean|largest|smallest|biggest|highest|lowest|"
     r"most|least|more than .* than|less than .* than|compare|per month|which (month|category|"
     r"merchant|year)|balance|interest|count)\b", re.I)
+# Questions for the agent's own tools, even if they contain calculation words
+# ("how much of my dining budget is left" -> budget_status, not text-to-SQL)
 ANOMALY_RE = re.compile(r"\b(subscriptions?|recurring|regularly|duplicates?|unusual|went up|"
-                        r"price (increase|change)|show|list)\b", re.I)
+                        r"price (increase|change)|show|list|budgets?)\b", re.I)
 
 
 def _answer_with_sql(conn: psycopg.Connection, ans: AgentAnswer, *, model: str,
@@ -319,7 +346,7 @@ def _answer_with_sql(conn: psycopg.Connection, ans: AgentAnswer, *, model: str,
     if final is None:
         return None
     ans.calls.append(ToolCall("query_database", {"routed": "calculation"}, final.columns,
-                              final.rows, final.sql))
+                              final.rows, final.sql, seconds=sub.seconds))
     ans.text, ans.unsupported = sub.text, sub.unsupported
     return ans
 
@@ -349,8 +376,10 @@ def ask(conn: psycopg.Connection, question: str, *, model: str = MODEL, today: d
                                                       "arguments": tc.function.arguments}}
                                         for tc in msg.tool_calls]})
         for tc in msg.tool_calls:
+            t_call = time.time()
             call = run_tool(conn, tc.function.name, dict(tc.function.arguments or {}),
                             model=model, today=today, answer=ans)
+            call.seconds = time.time() - t_call
             ans.calls.append(call)
             messages.append({"role": "tool", "content": _tool_text(call), "tool_name": call.name})
     else:
