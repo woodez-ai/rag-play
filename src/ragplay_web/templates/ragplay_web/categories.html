@@ -1,0 +1,48 @@
+{% extends "ragplay_web/base.html" %}{% load ragfmt %}
+{% block title %}Categories{% endblock %}
+{% block heading %}Categories{% endblock %}
+{% block actions %}
+  <a class="btn {% if to_review %}btn-primary{% endif %}" href="{% url 'categories_review' %}">
+    Review AI choices{% if to_review %} <span class="count">{{ to_review }}</span>{% endif %}</a>
+{% endblock %}
+{% block content %}
+<section class="cat-summary">
+  {% for c, n, m, amt in summary %}
+    <a class="cat-tile {% if f.category == c %}on{% endif %}" href="{% if f.category == c %}?{% else %}?category={{ c }}{% endif %}">
+      <span class="cat-name">{{ c|label }}</span>
+      <span class="num cat-amt">{{ amt|money:0 }}</span>
+      <span class="muted small">{{ n }} txn{{ n|pluralize }} · {{ m }} merchant{{ m|pluralize }}</span>
+    </a>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>{{ count }} merchant{{ count|pluralize }}{% if f.category %} in {{ f.category|label }}{% endif %}</h2>
+    <form method="get" class="inline-form">
+      {% if f.category %}<input type="hidden" name="category" value="{{ f.category }}">{% endif %}
+      <input type="search" name="name" value="{{ f.name|default:'' }}" placeholder="Find a merchant" aria-label="Merchant name">
+      <select name="source" data-autosubmit aria-label="Source">
+        {% for v, text in sources %}<option value="{{ v }}" {% if v == f.source|default:"" %}selected{% endif %}>{{ text }}</option>{% endfor %}
+      </select>
+      {% if f.category or f.source or f.name %}<a class="btn btn-ghost" href="?">Clear</a>{% endif %}
+    </form>
+  </div>
+  <p class="muted small">Change a category and it saves straight away. Your choices always win: re-running categorisation never overrides them.</p>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Merchant</th><th class="r">Txns</th><th class="r">Net</th><th>Set by</th><th>Category</th></tr></thead>
+    <tbody>
+      {% for r in rows %}{% include "ragplay_web/_merchant_row.html" %}{% endfor %}
+    </tbody>
+  </table></div>
+  {% if pages > 1 %}
+  <nav class="pager">
+    {% if page > 1 %}<a class="btn btn-ghost" href="?{{ query }}&page={{ page|add:-1 }}">← Previous</a>{% endif %}
+    <span class="muted">Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a class="btn btn-ghost" href="?{{ query }}&page={{ page|add:1 }}">Next →</a>{% endif %}
+  </nav>
+  {% endif %}
+  {% else %}<p class="muted">No merchants match.</p>{% endif %}
+</section>
+{% endblock %}

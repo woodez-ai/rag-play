@@ -3,18 +3,21 @@
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 import ollama
 import psycopg
 from django.conf import settings
-from django.http import Http404, HttpRequest, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import redirect, render
+from django.utils.text import get_valid_filename
 from django.views.decorators.http import require_POST
 
-from ragplay import agent, anomalies, budgets, db, stats, store, text2sql, trace
+from ragplay import agent, anomalies, budgets, categorize, db, stats, store, text2sql, trace
+from ragplay_web import jobs
 
 NAV = [("dashboard", "Dashboard"), ("ask", "Ask"), ("spending", "Spending"), ("insights", "Insights"),
-       ("budgets", "Budgets"), ("history", "History")]
+       ("budgets", "Budgets"), ("categories", "Categories"), ("import", "Import"), ("history", "History")]
 STARTERS = [
     "How much did I spend on groceries last month?",
     "Which subscriptions do I pay for?",
@@ -309,3 +312,147 @@ def _budgets_response(request: HttpRequest, ctx: dict) -> HttpResponse:
     if request.headers.get("HX-Request"):
         return render(request, "ragplay_web/_budgets.html", ctx)
     return redirect(f"/budgets?month={ctx['month']}")
+
+
+# ---------------------------------------------------------------- categories
+
+SOURCES = [("", "Any source"), ("llm", "Set by AI"), ("rule", "Set by rule"), ("manual", "Set by you")]
+
+
+def categories(request: HttpRequest) -> HttpResponse:
+    g = request.GET
+    cat = g.get("category") if g.get("category") in categorize.CATEGORIES else None
+    src = g.get("source") if g.get("source") in ("llm", "rule", "manual") else None
+    name = g.get("name", "").strip()[:100] or None
+    with reader() as conn:
+        summary = categorize.summary(conn)
+        rows = categorize.merchants(conn, category=cat, source=src, name=name)
+        to_review = len(categorize.merchants(conn, source="llm"))
+    try:
+        page = max(1, int(g.get("page", 1)))
+    except ValueError:
+        page = 1
+    pages = max(1, -(-len(rows) // PAGE_SIZE))
+    page = min(page, pages)
+    query = g.copy()
+    query.pop("page", None)
+    return render(request, "ragplay_web/categories.html", {
+        "summary": summary, "rows": rows[(page - 1) * PAGE_SIZE: page * PAGE_SIZE], "count": len(rows),
+        "choices": categorize.CATEGORIES, "sources": SOURCES, "f": {"category": cat, "source": src, "name": name},
+        "page": page, "pages": pages, "query": query.urlencode(), "to_review": to_review,
+    })
+
+
+@require_POST
+def category_set(request: HttpRequest) -> HttpResponse:
+    """Change one merchant's category (becomes source=manual). Returns the updated row."""
+    merchant, category = request.POST.get("merchant", ""), request.POST.get("category", "")
+    with owner() as conn:
+        try:
+            categorize.set_category(conn, merchant, category)
+        except ValueError as e:
+            return HttpResponseBadRequest(str(e))
+        row = categorize.merchants(conn, name=merchant)
+    row = next((r for r in row if r[0] == merchant), None)
+    if request.headers.get("HX-Request"):
+        return render(request, "ragplay_web/_merchant_row.html", {"r": row, "choices": categorize.CATEGORIES, "saved": True})
+    return redirect(request.META.get("HTTP_REFERER") or "categories")
+
+
+def _review_card(request: HttpRequest, conn: psycopg.Connection) -> dict:
+    skipped = set(request.session.get("review_skipped", []))
+    queue = [r for r in categorize.merchants(conn, source="llm") if r[0] not in skipped]
+    r = queue[0] if queue else None
+    return {"r": r, "left": len(queue), "skipped": len(skipped), "choices": categorize.MERCHANT_CATEGORIES,
+            "examples": categorize.examples(conn, r[0]) if r else []}
+
+
+def category_review(request: HttpRequest) -> HttpResponse:
+    """One AI-categorised merchant at a time, most transactions first."""
+    if request.GET.get("restart"):
+        request.session.pop("review_skipped", None)
+    with reader() as conn:
+        ctx = _review_card(request, conn)
+    return render(request, "ragplay_web/review_queue.html", ctx)
+
+
+@require_POST
+def category_review_answer(request: HttpRequest) -> HttpResponse:
+    merchant, action = request.POST.get("merchant", ""), request.POST.get("action", "")
+    with owner() as conn:
+        if action == "skip":
+            request.session["review_skipped"] = request.session.get("review_skipped", []) + [merchant]
+        else:  # "keep" confirms the current category, any other value is a new category
+            current = next((r[1] for r in categorize.merchants(conn, name=merchant) if r[0] == merchant), None)
+            try:
+                categorize.set_category(conn, merchant, current if action == "keep" else action)
+            except ValueError as e:
+                return HttpResponseBadRequest(str(e))
+        ctx = _review_card(request, conn)
+    if request.headers.get("HX-Request"):
+        return render(request, "ragplay_web/_review_card.html", ctx)
+    return redirect("categories_review")
+
+
+# ---------------------------------------------------------------- import
+
+def _save_upload(f, directory: Path) -> Path | str:
+    """Store one uploaded PDF; returns its path, or an error message."""
+    name = Path(f.name or "").name
+    if not name.lower().endswith(".pdf"):
+        return f"{name or 'file'}: not a PDF"
+    if f.size > settings.MAX_PDF_BYTES:
+        return f"{name}: larger than {settings.MAX_PDF_BYTES // 2**20} MB"
+    head = f.read(5)
+    f.seek(0)
+    if head != b"%PDF-":
+        return f"{name}: not a PDF file"
+    name = get_valid_filename(name)
+    directory.mkdir(parents=True, exist_ok=True)
+    data = f.read()
+    path = directory / name
+    stem, n = path.stem, 2
+    while path.exists():
+        if path.read_bytes() == data:  # the same file again: reuse it (ingest will skip it)
+            return path
+        path, n = directory / f"{stem}-{n}.pdf", n + 1
+    path.write_bytes(data)
+    path.chmod(0o600)
+    return path
+
+
+def import_page(request: HttpRequest) -> HttpResponse:
+    with reader() as conn:
+        statements = stats.statements(conn)
+    return render(request, "ragplay_web/import.html", {
+        "statements": statements, "job": jobs.current(), "max_mb": settings.MAX_PDF_BYTES // 2**20,
+        "import_dir": settings.IMPORT_DIR.relative_to(db.ROOT) if settings.IMPORT_DIR.is_relative_to(db.ROOT) else settings.IMPORT_DIR,
+    })
+
+
+@require_POST
+def import_upload(request: HttpRequest) -> HttpResponse:
+    files = request.FILES.getlist("pdfs")
+    paths, problems = [], []
+    for f in files:
+        out = _save_upload(f, settings.IMPORT_DIR)
+        (paths if isinstance(out, Path) else problems).append(out)
+    job, error = None, ""
+    if paths:
+        try:
+            job = jobs.start(settings.RAG_SCHEMA, paths)
+        except RuntimeError as e:
+            error = str(e)
+    elif not files:
+        error = "Choose one or more statement PDFs."
+    return render(request, "ragplay_web/_job.html", {"job": job, "problems": problems, "error": error})
+
+
+def import_job(request: HttpRequest, job_id: str) -> HttpResponse:
+    job = jobs.get(job_id)
+    if job is None:
+        raise Http404
+    resp = render(request, "ragplay_web/_job.html", {"job": job})
+    if job.done:
+        resp.status_code = 286  # htmx: stop polling
+    return resp

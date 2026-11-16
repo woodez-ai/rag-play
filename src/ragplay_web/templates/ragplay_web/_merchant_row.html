@@ -1,0 +1,18 @@
+{% load ragfmt %}<tr class="{% if saved %}saved{% endif %}">
+  <td><a class="plain strong" href="{% url 'spending' %}?merchant={{ r.0|urlencode }}">{{ r.0 }}</a>
+      {% if r.3 %}<div class="muted small">{{ r.3 }}</div>{% endif %}</td>
+  <td class="r num">{{ r.4 }}</td>
+  <td class="r num">{{ r.5|money }}</td>
+  <td><span class="src src-{{ r.2 }}">{% if r.2 == "llm" %}AI{% elif r.2 == "manual" %}You{% else %}Rule{% endif %}</span></td>
+  <td>
+    <form method="post" action="{% url 'categories_set' %}" hx-post="{% url 'categories_set' %}"
+          hx-target="closest tr" hx-swap="outerHTML" hx-trigger="change">
+      {% csrf_token %}<input type="hidden" name="merchant" value="{{ r.0 }}">
+      <select name="category" aria-label="Category for {{ r.0 }}">
+        {% for c in choices %}<option value="{{ c }}" {% if c == r.1 %}selected{% endif %}>{{ c|label }}</option>{% endfor %}
+      </select>
+      <noscript><button class="btn">Save</button></noscript>
+      {% if saved %}<span class="saved-tick">✓ saved</span>{% endif %}
+    </form>
+  </td>
+</tr>

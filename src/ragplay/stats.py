@@ -73,3 +73,13 @@ def categories(conn: psycopg.Connection) -> list[str]:
     """Categories that have transactions, alphabetical."""
     return [r[0] for r in conn.execute(
         "SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL ORDER BY 1")]
+
+
+def statements(conn: psycopg.Connection) -> list[tuple]:
+    """(issuer, card_last4, period_start, period_end, closing_balance, txns, source_file, ingested_at),
+    newest period first."""
+    return conn.execute(
+        """SELECT s.issuer, s.card_last4, s.period_start, s.period_end, s.closing_balance, count(t.id),
+                  s.source_file, s.ingested_at
+           FROM statements s LEFT JOIN transactions t ON t.statement_id = s.id
+           GROUP BY s.id ORDER BY s.period_end DESC, s.id DESC""").fetchall()

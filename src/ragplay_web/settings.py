@@ -36,6 +36,10 @@ ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
 # which ragplay schema the pages read (`rag web --schema ragplay_sample` for synthetic data)
 RAG_SCHEMA = os.environ.get("RAGPLAY_WEB_SCHEMA", db.SCHEMA)
+# uploaded statements: the real ones join cc_statements/ (gitignored); synthetic ones stay apart
+IMPORT_DIR = db.ROOT / "cc_statements" if RAG_SCHEMA == db.SCHEMA else DATA_DIR / "uploads" / RAG_SCHEMA
+MAX_PDF_BYTES = 25 * 1024 * 1024
+DATA_UPLOAD_MAX_NUMBER_FILES = 60
 
 INSTALLED_APPS = [
     "django.contrib.sessions",

@@ -20,7 +20,7 @@ from django.test.utils import setup_test_environment  # noqa: E402
 
 setup_test_environment()  # records response.context
 
-from ragplay import agent, budgets, categorize, db, ingest, stats, text2sql, trace  # noqa: E402
+from ragplay import agent, budgets, categorize, db, ingest, stats, store, text2sql, trace  # noqa: E402
 from ragplay.agent import AgentAnswer, ToolCall  # noqa: E402
 from ragplay.categorize import Classification  # noqa: E402
 
@@ -218,3 +218,90 @@ def test_review_facts_include_difference(data):
     c, _ = data
     f = anomalies.monthly_review(c, "2026-01")
     assert f["difference_from_average"] == f["total_spend"] - f["previous_3_months_average"]
+
+
+# ---------------------------------------------------------------- PR 3: categories, import
+
+def test_categories_page_and_inline_change(data, client):
+    c, _ = data
+    r = client.get("/categories")
+    assert r.status_code == 200 and r.context["count"] == len(categorize.merchants(c))
+    name, cat = r.context["rows"][0][0], r.context["rows"][0][1]
+    new = "travel" if cat != "travel" else "home"
+    r = client.post("/categories/set", {"merchant": name, "category": new}, HTTP_HX_REQUEST="true")
+    assert r.status_code == 200 and b"saved" in r.content
+    row = next(m for m in categorize.merchants(c) if m[0] == name)
+    assert row[1] == new and row[2] == "manual"
+    assert c.execute("SELECT DISTINCT category FROM transactions WHERE merchant = %s", (name,)).fetchall() == [(new,)]
+    assert client.post("/categories/set", {"merchant": name, "category": "nonsense"}).status_code == 400
+    categorize.set_category(c, name, cat)  # put it back (still manual)
+    assert client.get(f"/categories?category={cat}&source=manual").context["count"] >= 1
+
+
+def test_review_queue_keep_change_skip(data, client):
+    c, _ = data
+    queue = [m[0] for m in categorize.merchants(c, source="llm")]
+    assert len(queue) >= 3
+    r = client.get("/categories/review")
+    assert r.context["r"][0] == queue[0] and r.context["left"] == len(queue)
+    hx = {"HTTP_HX_REQUEST": "true"}
+    r = client.post("/categories/review/answer", {"merchant": queue[0], "action": "keep"}, **hx)
+    assert r.context["r"][0] == queue[1]
+    r = client.post("/categories/review/answer", {"merchant": queue[1], "action": "skip"}, **hx)
+    assert r.context["r"][0] == queue[2] and r.context["skipped"] == 1
+    r = client.post("/categories/review/answer", {"merchant": queue[2], "action": "charity"}, **hx)
+    srcs = {m[0]: (m[1], m[2]) for m in categorize.merchants(c)}
+    assert srcs[queue[0]][1] == "manual" and srcs[queue[1]][1] == "llm" and srcs[queue[2]] == ("charity", "manual")
+    assert client.get("/categories/review?restart=1").context["skipped"] == 0
+
+
+def test_import_upload_validates_and_loads(data, client, monkeypatch, tmp_path):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from ragplay_web import jobs
+    c, _ = data
+    out = tmp_path / "new"
+    subprocess.run([sys.executable, ROOT / "scripts/make_fake_statements.py", "--months", "1",
+                    "--end", "2026-04", "--out", out], check=True, capture_output=True)
+    pdf = next(out.glob("*.pdf"))
+    monkeypatch.setattr(settings, "IMPORT_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(jobs, "RUN_ASYNC", False)
+    monkeypatch.setattr(categorize, "llm_classify", lambda key, raw, model=None: Classification(
+        key.split()[0].title(), "other", "x", "llm"))
+    embedded = []
+    monkeypatch.setattr(store, "embed_transactions", lambda conn, model=None: embedded.append(1) or (5, 3))
+    n_before = c.execute("SELECT count(*) FROM statements").fetchone()[0]
+
+    def upload(*files):
+        return client.post("/import/upload", {"pdfs": list(files)})
+
+    r = upload(SimpleUploadedFile("notes.txt", b"hello"), SimpleUploadedFile("fake.pdf", b"not a pdf"))
+    assert r.context["job"] is None and len(r.context["problems"]) == 2
+
+    r = upload(SimpleUploadedFile("../../evil name.pdf", pdf.read_bytes()))
+    job = r.context["job"]
+    assert job.stage == "done" and job.files[0].status == "loaded" and job.files[0].transactions > 0
+    assert [s for _, s in job.steps] == ["ok", "ok", "ok"] and embedded == [1]
+    saved = list((tmp_path / "uploads").iterdir())
+    assert [p.name for p in saved] == ["evil_name.pdf"]  # path parts stripped, name sanitised
+    assert c.execute("SELECT count(*) FROM statements").fetchone()[0] == n_before + 1
+
+    r = upload(SimpleUploadedFile("again.pdf", pdf.read_bytes()))  # same content: skipped
+    job = r.context["job"]
+    assert job.files[0].status == "skipped" and [s for _, s in job.steps] == ["ok", "skip", "skip"]
+    poll = client.get(f"/import/job/{job.id}")
+    assert poll.status_code == 286  # finished: htmx stops polling
+    page = client.get("/import")
+    assert len(page.context["statements"]) == n_before + 1
+    # leave the shared test data as it was
+    c.execute("DELETE FROM statements WHERE source_file = 'evil_name.pdf'")
+
+
+def test_import_refuses_a_second_job(data, client, monkeypatch, tmp_path):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from ragplay_web import jobs
+    monkeypatch.setattr(settings, "IMPORT_DIR", tmp_path)
+    running = jobs.Job("x", db.TEST_SCHEMA, [], stage="ingest")
+    monkeypatch.setattr(jobs, "_jobs", {"x": running})
+    monkeypatch.setattr(jobs, "_current", "x")
+    r = client.post("/import/upload", {"pdfs": [SimpleUploadedFile("a.pdf", b"%PDF-1.4 x")]})
+    assert "already running" in r.context["error"]

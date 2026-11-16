@@ -254,6 +254,7 @@ Eval, `db migrate/check` and LlamaIndex stay in the CLI. See `notes/phase11-web.
 
 ✅ PR 1 done: 143 tests pass; end-to-end chat checked on sample data.
 ✅ PR 2 done: Spending, Insights, Budgets; 150 tests pass.
+✅ PR 3 done: Categories, review queue, Import; 154 tests pass. Phase 11 complete.
 
 ---
 

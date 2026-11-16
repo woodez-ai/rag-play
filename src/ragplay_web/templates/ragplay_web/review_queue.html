@@ -1,0 +1,8 @@
+{% extends "ragplay_web/base.html" %}
+{% block title %}Review categories{% endblock %}
+{% block heading %}Review AI categories{% endblock %}
+{% block actions %}<a class="btn btn-ghost" href="{% url 'categories' %}">← All categories</a>{% endblock %}
+{% block content %}
+<p class="muted lead">The local model chose these. Confirm or correct each one, busiest merchants first. Anything you answer is locked in as your choice.</p>
+{% include "ragplay_web/_review_card.html" %}
+{% endblock %}

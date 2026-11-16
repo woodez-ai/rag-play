@@ -1,0 +1,34 @@
+{% extends "ragplay_web/base.html" %}{% load ragfmt %}
+{% block title %}Import{% endblock %}
+{% block heading %}Import statements{% endblock %}
+{% block content %}
+<form id="upload-form" class="card dropzone" method="post" action="{% url 'import_upload' %}" enctype="multipart/form-data"
+      hx-post="{% url 'import_upload' %}" hx-encoding="multipart/form-data" hx-target="#job" hx-swap="innerHTML"
+      hx-disabled-elt="find button">
+  {% csrf_token %}
+  <div class="dz-icon"></div>
+  <p class="dz-title">Drop statement PDFs here</p>
+  <p class="muted small">or <label class="link" for="pdfs">choose files</label> · up to {{ max_mb }} MB each · saved to <code>{{ import_dir }}/</code></p>
+  <input id="pdfs" type="file" name="pdfs" accept="application/pdf,.pdf" multiple class="sr-only">
+  <noscript><button class="btn btn-primary">Upload</button></noscript>
+  <p class="muted small dz-steps">Each statement is parsed and checked against its own totals to the cent; it loads only if everything balances.
+     Then new merchants are categorised and transactions are embedded for search. Files already loaded are skipped.</p>
+</form>
+
+<div id="job">{% if job %}{% include "ragplay_web/_job.html" %}{% endif %}</div>
+
+<section class="card">
+  <div class="card-head"><h2>Loaded statements</h2><span class="muted small">{{ statements|length }} statement{{ statements|length|pluralize }}</span></div>
+  {% if statements %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Period</th><th>Card</th><th class="r">Transactions</th><th class="r">Closing balance</th><th>File</th><th>Loaded</th></tr></thead>
+    <tbody>{% for issuer, last4, ps, pe, bal, n, src, at in statements %}
+      <tr><td class="nowrap"><a class="plain strong" href="{% url 'spending' %}?from={{ ps|date:'Y-m-d' }}&to={{ pe|date:'Y-m-d' }}">{{ ps|date:"M j" }} – {{ pe|date:"M j, Y" }}</a></td>
+          <td class="nowrap">{{ issuer|title }} ··{{ last4 }}</td>
+          <td class="r num">{{ n }}</td><td class="r num">{{ bal|money }}</td>
+          <td class="muted small">{{ src }}</td><td class="muted small nowrap">{{ at|date:"M j, Y" }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">Nothing loaded yet.</p>{% endif %}
+</section>
+{% endblock %}

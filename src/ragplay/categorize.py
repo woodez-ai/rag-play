@@ -244,3 +244,29 @@ def set_category(conn: psycopg.Connection, merchant: str, category: str,
         if n == 0:
             raise ValueError(f"no merchant named {merchant!r}")
     refresh_transactions(conn)
+
+
+def merchants(conn: psycopg.Connection, *, category: str | None = None, source: str | None = None,
+              name: str | None = None) -> list[tuple]:
+    """(merchant, category, source, description, txns, net amount), most transactions first."""
+    return conn.execute(
+        """SELECT m.merchant, m.category, m.source, coalesce(m.description, ''),
+                  count(t.id), coalesce(sum(t.amount), 0)
+           FROM merchant_categories m LEFT JOIN transactions t ON t.merchant = m.merchant
+           WHERE (%(c)s::text IS NULL OR m.category = %(c)s) AND (%(s)s::text IS NULL OR m.source = %(s)s)
+             AND (%(n)s::text IS NULL OR m.merchant ILIKE '%%' || %(n)s || '%%')
+           GROUP BY 1, 2, 3, 4 ORDER BY count(t.id) DESC, 1""",
+        dict(c=category, s=source, n=name)).fetchall()
+
+
+def summary(conn: psycopg.Connection) -> list[tuple]:
+    """(category, txns, merchants, net amount) per category, largest net amount first."""
+    return conn.execute(
+        """SELECT coalesce(category, '(none)'), count(*), count(DISTINCT merchant), sum(amount)
+           FROM transactions GROUP BY 1 ORDER BY 4 DESC""").fetchall()
+
+
+def examples(conn: psycopg.Connection, merchant: str, n: int = 3) -> list[str]:
+    """A few raw statement descriptors for a merchant (what the bank printed)."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT description_raw FROM transactions WHERE merchant = %s LIMIT %s", (merchant, n))]
