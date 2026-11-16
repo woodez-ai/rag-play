@@ -44,7 +44,7 @@ The CLI's functionality in a browser, simple to navigate, for one person on this
   at the first month with data.
 
 ## Verification
-- `tests/test_web.py` (9 in PR 1, 16 after PR 2): dashboard numbers equal ground truth, partial month flagged, chat keeps
+- `tests/test_web.py` (9 in PR 1, 16 after PR 2, 20 after PR 3): dashboard numbers equal ground truth, partial month flagged, chat keeps
   history and passes it to the agent, SQL-only mode, traces carry schema and session, History
   filters by schema, CSRF and Host enforcement, CSP header. 143 tests pass.
 - End to end on `ragplay_sample` through the HTTP endpoint: "groceries in March 2026" → $603.84
@@ -74,5 +74,24 @@ The CLI's functionality in a browser, simple to navigate, for one person on this
   the 3-month average from the total itself. Root-cause fix: `monthly_review` now includes
   `difference_from_average`, so there's nothing left to compute.
 
-## Next PR
-3. Categories (edit, review queue), Import (drag-and-drop PDFs with progress).
+## Pages (PR 3)
+- **Categories**: a tile per category (spend, transactions, merchants; click to filter); a
+  merchant table with a category dropdown that saves on change (becomes "set by you", which
+  re-runs never override); filter by name and by who set it (AI / rule / you).
+- **Review AI choices**: one AI-categorised merchant at a time, busiest first, with how it
+  appears on the statement; "Looks right", "Skip for now" or one click on another category.
+  Same effect as `rag categories review`.
+- **Import**: drop PDFs (or choose files). Each is checked (`.pdf`, starts with `%PDF-`, ≤ 25 MB),
+  stored with a sanitised name (mode 600) in `cc_statements/` for real data or
+  `data/web/uploads/<schema>/` for synthetic schemas; identical re-uploads reuse the file and
+  ingest skips them. A background thread runs ingest → categorise → embed, one job at a time; the
+  page polls every 1.5 s and htmx stops on HTTP 286. Errors (e.g. Ollama down) are shown, and
+  re-uploading resumes because every step is idempotent. Loaded statements are listed below.
+- `categorize.merchants/summary/examples` moved out of `cli.py` so the CLI and web share them.
+
+## Verification (PR 3)
+- Tests: inline category change (DB and transactions updated, source manual, bad category 400),
+  review queue keep/skip/change/restart, upload validation (non-PDF, fake PDF), path-stripping
+  name sanitising, load then duplicate skip, 286 when finished, one job at a time. 154 pass.
+- End to end on `ragplay_test` with the real local model: two synthetic PDFs uploaded through
+  the endpoint → 89 transactions loaded, 22 merchants categorised, 89 embedded, ~2 minutes.

@@ -1,0 +1,39 @@
+{% load ragfmt %}
+<div id="review-card">
+{% if r %}
+  <div class="review-progress muted small">{{ left }} left to review{% if skipped %} · {{ skipped }} skipped (<a href="?restart=1">show again</a>){% endif %}</div>
+  <section class="card review-card">
+    <div class="rc-head">
+      <div>
+        <h2 class="rc-name">{{ r.0 }}</h2>
+        {% if r.3 %}<div class="muted">{{ r.3 }}</div>{% endif %}
+      </div>
+      <div class="rc-stats num"><b>{{ r.4 }}</b> txn{{ r.4|pluralize }} · <b>{{ r.5|money }}</b></div>
+    </div>
+    <div class="rc-raw">
+      <span class="muted small">On your statement as</span>
+      {% for e in examples %}<code>{{ e }}</code>{% endfor %}
+    </div>
+    <div class="rc-current">AI chose <span class="cat cat-big">{{ r.1|label }}</span></div>
+    <div class="rc-actions">
+      <form method="post" action="{% url 'categories_answer' %}" hx-post="{% url 'categories_answer' %}"
+            hx-target="#review-card" hx-swap="outerHTML" hx-disabled-elt="find button">
+        {% csrf_token %}<input type="hidden" name="merchant" value="{{ r.0 }}">
+        <div class="rc-main">
+          <button class="btn btn-primary" name="action" value="keep">✓ Looks right</button>
+          <button class="btn btn-ghost" name="action" value="skip">Skip for now</button>
+        </div>
+        <div class="muted small rc-or">or change it to</div>
+        <div class="chips chips-left">
+          {% for c in choices %}{% if c != r.1 %}<button class="chip" name="action" value="{{ c }}">{{ c|label }}</button>{% endif %}{% endfor %}
+        </div>
+      </form>
+    </div>
+  </section>
+{% else %}
+  <section class="card empty">
+    <p class="ok-line">✓ Nothing left to review{% if skipped %} ({{ skipped }} skipped, <a href="?restart=1">review them</a>){% endif %}.</p>
+    <p class="muted">Every AI-chosen category has been confirmed or corrected.</p>
+  </section>
+{% endif %}
+</div>

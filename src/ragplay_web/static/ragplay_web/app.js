@@ -109,6 +109,30 @@
     form.q.focus();
   });
 
+  // ---- import: drag and drop PDFs onto the drop zone, or pick them
+  document.addEventListener("change", (e) => {
+    if (e.target.matches("#pdfs") && e.target.files.length) e.target.form.requestSubmit();
+  });
+  ["dragenter", "dragover"].forEach((t) => document.addEventListener(t, (e) => {
+    const zone = e.target.closest?.(".dropzone");
+    if (!zone) return;
+    e.preventDefault();
+    zone.classList.add("over");
+  }));
+  document.addEventListener("dragleave", (e) => {
+    const zone = e.target.closest?.(".dropzone");
+    if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("over");
+  });
+  document.addEventListener("drop", (e) => {
+    const zone = e.target.closest?.(".dropzone");
+    if (!zone) return;
+    e.preventDefault();
+    zone.classList.remove("over");
+    const input = zone.querySelector("#pdfs");
+    input.files = e.dataTransfer.files;
+    if (input.files.length) zone.requestSubmit();
+  });
+
   document.addEventListener("DOMContentLoaded", () => {
     trendChart();
     document.querySelector("#conversation .turn:last-child")?.scrollIntoView({ block: "end" });

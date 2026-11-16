@@ -17,6 +17,13 @@ urlpatterns = [
     path("budgets", views.budgets_page, name="budgets"),
     path("budgets/set", views.budget_set, name="budget_set"),
     path("budgets/remove", views.budget_remove, name="budget_remove"),
+    path("categories", views.categories, name="categories"),
+    path("categories/set", views.category_set, name="categories_set"),
+    path("categories/review", views.category_review, name="categories_review"),
+    path("categories/review/answer", views.category_review_answer, name="categories_answer"),
+    path("import", views.import_page, name="import"),
+    path("import/upload", views.import_upload, name="import_upload"),
+    path("import/job/<slug:job_id>", views.import_job, name="import_job"),
     path("history", views.history, name="history"),
     path("health", views.health, name="health"),
     # runserver serves static files only with DEBUG on; this is a single-user localhost app

@@ -1,0 +1,25 @@
+{% if error %}<div class="notice notice-bad" role="alert">{{ error }}</div>{% endif %}
+{% if problems %}<div class="notice notice-bad" role="alert">Not imported: {{ problems|join:"; " }}</div>{% endif %}
+{% if job %}
+<section class="card job" {% if not job.done %}hx-get="{% url 'import_job' job.id %}" hx-trigger="every 1500ms" hx-swap="outerHTML"{% endif %}>
+  <div class="card-head">
+    <h2>{% if job.stage == "done" %}Import finished{% elif job.stage == "error" %}Import stopped{% else %}Importing…{% endif %}</h2>
+    {% if job.done %}<a class="btn btn-ghost" href="{% url 'import' %}">Refresh list</a>{% else %}<span class="spinner"></span>{% endif %}
+  </div>
+  <ol class="stages">
+    {% for label, state in job.steps %}<li class="step-{{ state }}">{{ label }}{% if state == "skip" %} <span class="muted small">(nothing new)</span>{% endif %}</li>{% endfor %}
+  </ol>
+  {% if job.detail %}<p class="muted small">{{ job.detail }}</p>{% endif %}
+  <ul class="files">
+    {% for f in job.files %}
+    <li class="file file-{{ f.status }}">
+      <span class="file-status">{% if f.status == "loaded" %}✓{% elif f.status == "failed" %}✕{% elif f.status == "skipped" %}–{% elif f.status == "loading" %}<span class="spinner"></span>{% else %}·{% endif %}</span>
+      <span class="file-name">{{ f.name }}</span>
+      <span class="muted small">{% if f.status == "loaded" %}{{ f.transactions }} transactions loaded{% elif f.status == "skipped" %}already loaded{% elif f.status == "failed" %}not loaded{% elif f.status == "loading" %}reading…{% else %}waiting{% endif %}</span>
+      {% if f.errors %}<ul class="file-errors">{% for e in f.errors %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if job.error %}<div class="notice notice-bad" role="alert">{{ job.error }}<br><span class="small">Statements that loaded are kept. Fix the problem (is Ollama running?) and upload again: loaded files are skipped and the rest picks up where it stopped.</span></div>{% endif %}
+</section>
+{% endif %}

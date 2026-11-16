@@ -457,21 +457,11 @@ categories_app = typer.Typer(no_args_is_help=True, help="Inspect and correct mer
 app.add_typer(categories_app, name="categories")
 
 
-def _merchants(conn, where: str = "", params: tuple = ()) -> list[tuple]:
-    return conn.execute(
-        f"""SELECT m.merchant, m.category, m.source, coalesce(m.description, ''),
-                   count(t.id), coalesce(sum(t.amount), 0)
-            FROM merchant_categories m LEFT JOIN transactions t ON t.merchant = m.merchant
-            {where} GROUP BY 1, 2, 3, 4 ORDER BY count(t.id) DESC, 1""", params).fetchall()
-
-
 @categories_app.command("summary")
 def categories_summary(schema: str = typer.Option(db.SCHEMA)) -> None:
     """Transactions, merchants and spend per category."""
     with db.connect_reader() if schema == db.SCHEMA else db.connect_owner(schema) as conn:
-        rows = conn.execute(
-            """SELECT coalesce(category, '(none)'), count(*), count(DISTINCT merchant), sum(amount)
-               FROM transactions GROUP BY 1 ORDER BY 4 DESC""").fetchall()
+        rows = categorize.summary(conn)
     table = Table("category", "txns", "merchants", "net amount")
     for cat, n, m, amt in rows:
         table.add_row(cat, str(n), str(m), f"{amt:,.2f}")
@@ -485,14 +475,8 @@ def categories_list(
     schema: str = typer.Option(db.SCHEMA),
 ) -> None:
     """Merchants with category, source, description and transaction count."""
-    conds, params = [], []
-    if category:
-        conds.append("m.category = %s"), params.append(category)
-    if source:
-        conds.append("m.source = %s"), params.append(source)
-    where = "WHERE " + " AND ".join(conds) if conds else ""
     with db.connect_owner(schema) as conn:
-        rows = _merchants(conn, where, tuple(params))
+        rows = categorize.merchants(conn, category=category, source=source)
     table = Table("merchant", "category", "source", "description", "txns", "net amount")
     for name, cat, src, desc, n, amt in rows:
         table.add_row(name, cat, src, desc, str(n), f"{amt:,.2f}")
@@ -521,12 +505,10 @@ def categories_review(
     console.print("Categories: " + ", ".join(categorize.CATEGORIES))
     with db.connect_owner(schema) as conn:
         conn.autocommit = True
-        rows = _merchants(conn, "WHERE m.source = %s", (source,))[:limit]
+        rows = categorize.merchants(conn, source=source)[:limit]
         changed = kept = 0
         for i, (name, cat, _, desc, n, amt) in enumerate(rows, 1):
-            examples = [r[0] for r in conn.execute(
-                "SELECT DISTINCT description_raw FROM transactions WHERE merchant = %s LIMIT 3",
-                (name,))]
+            examples = categorize.examples(conn, name)
             console.print(f"\n[bold]{i}/{len(rows)} {name}[/]  [cyan]{cat}[/]  {desc}"
                           f"  ({n} txns, {amt:,.2f})\n  raw: " + " | ".join(examples))
             ans = typer.prompt("category", default="", show_default=False).strip().lower()
