@@ -226,6 +226,7 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - `NLSQLTableQueryEngine` / `SQLTableRetrieverQueryEngine` over the same Postgres (`SQLDatabase` as `rag_reader`), `VectorStoreIndex` on `PGVectorStore` (its own table in the same DB), `RouterQueryEngine`, and a `FunctionAgent` with the same tools; Ollama LLM and embeddings.
 - Run the same eval. Write `notes/framework-comparison.md`: code size, what was hidden, customisation pain, debuggability, scores.
 - **Checkpoint:** comparable scores and a written comparison.
+- ✅ **Done 2026-11-15** → [notes/framework-comparison.md](notes/framework-comparison.md). Same models, DB and eval. **Real: hand-built 32/32 vs LlamaIndex 14/32 (defaults) / 22/32 (our SQL conventions via `context_query_kwargs`)**; sample 16 vs 8 / 10. Domain conventions are worth +8; the other 10 are orchestration lessons the framework lacks (question pass-through, exact-filter finds instead of top-k retrieval, calculation routing, zero-vs-no-data). ~4× less code (169 vs 657 lines). Gotchas: OpenAI defaults, sample rows in SQL prompts, masked password in `str(URL)`, event-loop binding, `str(ChatMessage)` role prefix. LlamaIndex is an optional extra (`ragplay[llamaindex]`).
 
 ## Phase 10 — Stretch
 - Observability: JSONL trace of each question → tool calls → SQL → result → answer.
