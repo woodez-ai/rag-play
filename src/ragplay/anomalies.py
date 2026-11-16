@@ -15,6 +15,8 @@ from decimal import Decimal
 
 import psycopg
 
+from ragplay import budgets
+
 # (name, min gap, max gap, min charges): a charge joins a series if it comes within the gap
 # window after the series' last charge at a similar amount. Monthly bills land on a stable day,
 # so the window is narrow (weekends/posting shift it a couple of days).
@@ -298,4 +300,7 @@ def monthly_review(conn: psycopg.Connection, month: str | None = None) -> dict:
         "unusual_purchases": [
             {"merchant": o.merchant, "date": o.txn_date, "amount": o.amount, "why": o.reason}
             for o in spend_outliers(conn, date_from=start, date_to=end)],
+        "budgets": [
+            {"category": b.category, "budget": b.budget, "spent": b.spent, "remaining": b.remaining,
+             "status": b.status} for b in budgets.status(conn, month, today=end)[1]],
     }

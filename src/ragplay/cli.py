@@ -1,12 +1,14 @@
 """`rag` command line. Later phases add ingest | ask | chat | eval."""
 
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from ragplay import agent, anomalies, categorize, db, evaluate, ingest, store, text2sql
+from ragplay import agent, anomalies, budgets, categorize, db, evaluate, ingest, store, text2sql, trace
 
 app = typer.Typer(no_args_is_help=True, help="Credit card statement analyst (local RAG).")
 db_app = typer.Typer(no_args_is_help=True, help="Database setup and checks.")
@@ -132,15 +134,24 @@ def search_cmd(
 @app.command("ask")
 def ask_cmd(
     question: str,
-    show_sql: bool = typer.Option(False, "--sql", help="Show the generated SQL and attempts."),
-    think: bool = typer.Option(False, help="Let qwen3 think before writing SQL (slower)."),
+    show_sql: bool = typer.Option(False, "--sql", help="Show tool calls / generated SQL."),
+    sql_only: bool = typer.Option(False, "--sql-only", help="Phase 5 text-to-SQL only (no agent)."),
+    think: bool = typer.Option(False, help="--sql-only: let qwen3 think before writing SQL."),
     model: str = typer.Option(text2sql.MODEL),
     schema: str = typer.Option(db.SCHEMA),
 ) -> None:
-    """Answer a question with LLM-written SQL (read-only; the database does the maths)."""
+    """Answer one question with the agent (same as `rag chat`), or with --sql-only the Phase 5
+    text-to-SQL path. Traced to data/traces/."""
+    if not sql_only:
+        with _reader(schema) as conn, console.status("thinking..."):
+            ans = agent.ask(conn, question, model=model)
+        trace.record(ans, system="agent", model=model, schema=schema)
+        _print_agent_answer(ans, show_sql)
+        return
     with db.connect_reader() if schema == db.SCHEMA else db.connect_owner(schema) as conn:
         with console.status("thinking..."):
             ans = text2sql.ask(conn, question, model=model, think=think)
+    trace.record(ans, system="sql", model=model, schema=schema)
     if show_sql:
         for i, a in enumerate(ans.attempts, 1):
             status = a.error or ("no rows" if a.empty else f"{len(a.rows)} rows")
@@ -182,6 +193,7 @@ def chat_cmd(
     """Conversation with the agent. Follow-ups ("and in April?") are rewritten into standalone
     questions from the last few turns. Empty line or Ctrl-D quits."""
     history: list[tuple[str, str]] = []
+    session = datetime.now().strftime("chat-%Y%m%d-%H%M%S")
     with db.connect_reader() if schema == db.SCHEMA else db.connect_owner(schema) as conn:
         while True:
             try:
@@ -192,6 +204,7 @@ def chat_cmd(
                 break
             with console.status("thinking..."):
                 ans = agent.ask(conn, q, model=model, history=history)
+            trace.record(ans, system="agent", model=model, schema=schema, session=session)
             _print_agent_answer(ans, verbose)
             history.append((ans.standalone, ans.text))
 
@@ -254,6 +267,83 @@ def review_cmd(month: str = typer.Option(None, help="YYYY-MM (default: last full
         console.print(f"[yellow]Warning: not in the computed facts: {', '.join(unsupported)}[/]")
 
 
+budget_app = typer.Typer(no_args_is_help=True, help="Monthly budgets per category ('all' = total).")
+app.add_typer(budget_app, name="budget")
+
+
+@budget_app.command("set")
+def budget_set(category: str, amount: str, schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Set a monthly budget, e.g. `rag budget set dining 400` or `rag budget set all 3000`."""
+    try:
+        value = Decimal(amount.replace("$", "").replace(",", ""))
+    except InvalidOperation:
+        raise typer.BadParameter(f"not an amount: {amount}")
+    with db.connect_owner(schema) as conn:
+        try:
+            budgets.set_budget(conn, category, value)
+        except ValueError as e:
+            console.print(f"[red]{e}[/]")
+            raise typer.Exit(1)
+    console.print(f"{category}: {value:,.2f} per month")
+
+
+@budget_app.command("remove")
+def budget_remove(category: str, schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Remove a budget."""
+    with db.connect_owner(schema) as conn:
+        console.print("removed" if budgets.remove_budget(conn, category) else f"no budget for {category}")
+
+
+@budget_app.command("list")
+def budget_list(schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Show all budgets."""
+    with _reader(schema) as conn:
+        _table(["category", "monthly budget"], budgets.list_budgets(conn))
+
+
+@budget_app.command("status")
+def budget_status_cmd(month: str = typer.Option(None, help="YYYY-MM (default: current, or latest with data)."),
+                      schema: str = typer.Option(db.SCHEMA)) -> None:
+    """Spent vs budget for a month, with a projection for a month in progress."""
+    with _reader(schema) as conn:
+        m, items = budgets.status(conn, month)
+    if not items:
+        console.print("No budgets set. Try `rag budget set dining 400`.")
+        return
+    through = items[0].data_through
+    partial = through and items[0].projected is not None
+    console.print(f"[bold]Budgets for {m}[/]" + (f" [yellow](data only through {through}; "
+                                                 "projected = straight-line to month end)[/]" if partial else ""))
+    colors = {"over": "red", "at risk": "yellow", "on track": "green"}
+    table = Table(*budgets.rows(items)[0][:-1])
+    for b in items:
+        table.add_row(b.category, f"{b.budget:,.2f}", f"{b.spent:,.2f}", f"{b.remaining:,.2f}",
+                      f"{b.pct_used}%", "" if b.projected is None else f"{b.projected:,.2f}",
+                      f"[{colors[b.status]}]{b.status}[/]")
+    console.print(table)
+
+
+@app.command("trace")
+def trace_cmd(last: int = typer.Option(15, "--last", "-n"),
+              show: int = typer.Option(None, "--show", help="Show full detail of entry N from the list.")) -> None:
+    """Recent questions from data/traces/ (route, tools, time, warnings); --show N for detail."""
+    import json
+    entries = trace.recent(last)
+    if show is not None:
+        if not 1 <= show <= len(entries):
+            console.print(f"[red]choose 1..{len(entries)}[/]")
+            raise typer.Exit(1)
+        console.print_json(json.dumps(entries[show - 1], default=str))
+        return
+    table = Table("#", "time", "question", "route / tools", "s", "warn")
+    for i, e in enumerate(entries, 1):
+        tools = ", ".join(s["tool"] for s in e["steps"]) or "-"
+        warn = ("unsupported " if e["unsupported"] else "") + ("error" if any(s.get("error") for s in e["steps"]) else "")
+        table.add_row(str(i), e["ts"][5:16].replace("T", " "), e["question"][:60],
+                      f"{e['route']}: {tools}"[:48], f"{e['seconds']:.0f}", warn)
+    console.print(table)
+
+
 @app.command("li-index")
 def li_index_cmd(schema: str = typer.Option(db.SCHEMA)) -> None:
     """Phase 9: (re)build the LlamaIndex PGVectorStore index (schema ragplay_li)."""
@@ -270,6 +360,7 @@ def li_ask_cmd(question: str, verbose: bool = typer.Option(False, "-v"),
     from ragplay_llamaindex.app import LlamaIndexAssistant
     with console.status("thinking (LlamaIndex)..."):
         ans = LlamaIndexAssistant(schema).ask(question)
+    trace.record(ans, system="llamaindex", model="qwen3:8b", schema=schema)
     _print_agent_answer(ans, verbose)
 
 

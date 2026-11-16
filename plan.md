@@ -235,6 +235,10 @@ transaction_embeddings(transaction_id, model text, embedding vector, PRIMARY KEY
 - MCP server exposing the read-only tools so other agents can query your spending.
 - Charts in the terminal (`plotext`) for trends.
 
+✅ Done (trace log + budgets): `rag trace`, `rag budget`, agent tool `budget_status`, budgets in
+`rag review`; real eval 32/32, sample 18/18. See `notes/phase10-trace-budgets.md`. CSV/OFX, MCP and
+charts remain open.
+
 ---
 
 ## Design patterns covered (cheat sheet)

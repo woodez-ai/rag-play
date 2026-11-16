@@ -36,7 +36,8 @@ import psycopg
 from ragplay import text2sql
 
 TOOL_LABEL = {"query_database": "sql", "find_transactions": "search", "detect_recurring": "anomaly",
-              "find_duplicates": "anomaly", "spend_outliers": "anomaly"}
+              "find_duplicates": "anomaly", "spend_outliers": "anomaly", "budget_status": "anomaly"}
+SAMPLE_BUDGETS = {"dining": Decimal("300"), "groceries": Decimal("700"), "all": Decimal("2500")}
 EVAL_TODAY = date(2026, 11, 14)  # fixed so "last month" means the same thing on every run
 ROOT = Path(__file__).resolve().parents[2]
 SETS = {"real": ROOT / "eval/questions.jsonl", "sample": ROOT / "eval/questions.sample.jsonl"}
@@ -147,7 +148,8 @@ def score_find(expected: list[tuple], final) -> tuple[float, float]:
 NEGATION = re.compile(r"\b(no|not|none|unchanged|didn't|did not|same|stayed|remained)\b")
 
 
-CHANGE_Q = re.compile(r"\b(went up|go up|increase|decrease|chang|duplicate|unusual)", re.I)
+CHANGE_Q = re.compile(r"\b(went up|go up|increase|decrease|chang|duplicate|unusual|go over|went over|"
+                      r"over budget)", re.I)
 
 
 def score_list_answer(expected: list[str], answer: str, known: list[str],
@@ -203,6 +205,9 @@ def ensure_sample(conn: psycopg.Connection, fake_dir: Path = ROOT / "data/fake")
     with the LLM, embed). Its own schema: the test suite truncates ragplay_test."""
     from ragplay import categorize, ingest, store
 
+    if not conn.execute("SELECT count(*) FROM budgets").fetchone()[0]:
+        for cat, amount in SAMPLE_BUDGETS.items():  # fixed, so budget questions are reproducible
+            conn.execute("INSERT INTO budgets (category, monthly_amount) VALUES (%s, %s)", (cat, amount))
     if conn.execute("SELECT count(*) FROM transactions").fetchone()[0]:
         return
     pdfs = sorted(fake_dir.glob("*.pdf"))
