@@ -1,0 +1,11 @@
+{% extends "ragplay_web/base.html" %}
+{% block title %}Welcome{% endblock %}
+{% block heading %}No statements yet{% endblock %}
+{% block content %}
+<section class="card empty">
+  <p>There's no spending in <strong>{{ schema }}</strong> yet. Load statements from the terminal:</p>
+  <pre>rag ingest cc_statements/
+rag categorize
+rag embed</pre>
+</section>
+{% endblock %}

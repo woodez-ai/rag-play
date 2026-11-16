@@ -1,0 +1,23 @@
+{% load ragfmt %}
+{% for s in steps %}
+<div class="step">
+  <div class="step-head">
+    <code class="tool">{{ s.tool }}</code>
+    {% for k, v in s.args.items %}<span class="arg">{{ k }}=<b>{{ v }}</b></span>{% endfor %}
+    <span class="muted step-meta">{% if s.error %}<span class="err">error</span>{% else %}{{ s.n_rows }} row{{ s.n_rows|pluralize }}{% endif %}{% if s.seconds %} · {{ s.seconds|floatformat:1 }}s{% endif %}</span>
+  </div>
+  {% if s.error %}<div class="step-error">{{ s.error }}</div>{% endif %}
+  {% if s.sql %}<pre class="sql">{{ s.sql }}</pre>{% endif %}
+  {% if s.rows %}
+  <div class="table-wrap">
+    <table class="mini">
+      <thead><tr>{% for c in s.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for r in s.rows|slice:":10" %}<tr>{% for v in r %}<td>{{ v|cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% if s.n_rows > 10 %}<div class="muted small">Showing 10 of {{ s.n_rows }} rows</div>{% endif %}
+  {% endif %}
+</div>
+{% empty %}
+<p class="muted small">No tool was used (the question was declined or answered directly).</p>
+{% endfor %}

@@ -1,0 +1,32 @@
+{% extends "ragplay_web/base.html" %}
+{% block title %}History{% endblock %}
+{% block heading %}Question history{% endblock %}
+{% block content %}
+<p class="muted lead">Every question asked from the web, <code>rag ask</code>, <code>rag chat</code> or <code>rag li-ask</code>, newest first. Open one to see how it was answered.</p>
+<div class="history">
+  {% for e in entries %}
+  <details class="card history-item">
+    <summary>
+      <div class="h-main">
+        <div class="h-q">{{ e.question }}</div>
+        <div class="h-meta muted">
+          {{ e.when|date:"M j, g:i a" }} · {{ e.route }}{% for s in e.steps %}{% if forloop.first %}: {% else %}, {% endif %}{{ s.tool }}{% endfor %}
+          · {{ e.seconds|floatformat:0 }}s{% if e.session %} · {{ e.session }}{% endif %}
+        </div>
+      </div>
+      <div class="h-flags">
+        {% if e.unsupported %}<span class="pill pill-at-risk">unsupported numbers</span>{% endif %}
+        {% for s in e.steps %}{% if s.error %}<span class="pill pill-over">error</span>{% endif %}{% endfor %}
+      </div>
+    </summary>
+    <div class="h-body">
+      {% if e.standalone != e.question %}<div class="understood">Understood as: {{ e.standalone }}</div>{% endif %}
+      <div class="answer">{{ e.answer|linebreaksbr }}</div>
+      {% include "ragplay_web/_steps.html" with steps=e.steps %}
+    </div>
+  </details>
+  {% empty %}
+  <section class="card empty"><p class="muted">No questions yet. Ask one on the <a href="{% url 'ask' %}">Ask</a> page.</p></section>
+  {% endfor %}
+</div>
+{% endblock %}

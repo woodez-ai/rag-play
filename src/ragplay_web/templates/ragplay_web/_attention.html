@@ -1,0 +1,7 @@
+{% if items %}
+<ul class="alerts">
+  {% for kind, text in items %}<li class="alert alert-{{ kind }}"><span class="alert-dot"></span>{{ text }}</li>{% endfor %}
+</ul>
+{% else %}
+<p class="ok-line">✓ Nothing unusual this month.</p>
+{% endif %}
