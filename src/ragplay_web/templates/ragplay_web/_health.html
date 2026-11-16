@@ -1,0 +1,2 @@
+<span class="dot {% if ok_db and ok_llm %}dot-ok{% else %}dot-bad{% endif %}"></span>
+{% if ok_db and ok_llm %}All systems ready{% else %}{% if not ok_db %}Database unreachable{% endif %}{% if not ok_db and not ok_llm %} · {% endif %}{% if not ok_llm %}Ollama not ready{% endif %}{% endif %}

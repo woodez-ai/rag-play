@@ -1,0 +1,102 @@
+{% extends "ragplay_web/base.html" %}{% load ragfmt %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}{{ month|month_name }}{% endblock %}
+{% block actions %}
+  <form method="get" class="month-picker">
+    <select name="month" data-autosubmit aria-label="Month">
+      {% for m in months %}<option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m|month_name }}</option>{% endfor %}
+    </select>
+    <noscript><button class="btn">Go</button></noscript>
+  </form>
+{% endblock %}
+{% block content %}
+{% if not cur.complete %}
+  <div class="notice">Data for this month runs through {{ cur.data_through|date:"M j" }}; the month isn't complete yet.</div>
+{% endif %}
+
+<section class="tiles">
+  <div class="tile">
+    <div class="tile-label">Spent</div>
+    <div class="tile-value">{{ cur.spent|money }}</div>
+    <div class="tile-sub">{{ cur.purchases }} purchase{{ cur.purchases|pluralize }}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">vs {{ prev.month|month_name|default:"last month" }}</div>
+    {% if change is not None %}
+      <div class="tile-value {% if change > 0 %}up{% elif change < 0 %}down{% endif %}">
+        {% if change > 0 %}▲{% elif change < 0 %}▼{% endif %} {{ change_abs }}%</div>
+      <div class="tile-sub">{{ prev.spent|money }} last month</div>
+    {% else %}
+      <div class="tile-value muted">—</div>
+      <div class="tile-sub">{% if not cur.complete %}month in progress{% else %}no earlier data{% endif %}</div>
+    {% endif %}
+  </div>
+  <div class="tile">
+    <div class="tile-label">Top category</div>
+    {% with cats|first as top %}
+      <div class="tile-value small">{{ top.0|label|default:"—" }}</div>
+      <div class="tile-sub">{{ top.1|money }}</div>
+    {% endwith %}
+  </div>
+  <div class="tile">
+    <div class="tile-label">Budgets</div>
+    {% if budgets %}
+      <div class="tile-value {% if over %}up{% else %}down{% endif %}">{% if over %}{{ over }} over{% else %}On track{% endif %}</div>
+      <div class="tile-sub">{{ budgets|length }} budget{{ budgets|length|pluralize }} set</div>
+    {% else %}
+      <div class="tile-value muted small">None set</div>
+      <div class="tile-sub">use <code>rag budget set</code></div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Monthly spending</h2><span class="muted">click a bar to open that month</span></div>
+  <div class="chart-box"><canvas id="trend-chart" aria-label="Monthly spending, last 12 months" role="img"></canvas></div>
+  {{ chart|json_script:"trend-data" }}
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <div class="card-head"><h2>By category</h2></div>
+    <ul class="bars">
+      {% for c, amount, pct in cats %}
+        <li>
+          <div class="bar-label"><span>{{ c|label }}</span><span class="num">{{ amount|money }}</span></div>
+          <div class="bar"><div class="bar-fill" style="width: {{ pct|floatformat:1 }}%"></div></div>
+        </li>
+      {% empty %}<li class="muted">No spending this month.</li>{% endfor %}
+    </ul>
+  </section>
+
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><h2>Budgets</h2></div>
+      {% if budgets %}
+        <ul class="bars">
+          {% for b, pct in budgets %}
+            <li>
+              <div class="bar-label">
+                <span>{% if b.category == "all" %}Total spending{% else %}{{ b.category|label }}{% endif %}</span>
+                <span class="num">{{ b.spent|money:0 }} <span class="muted">of {{ b.budget|money:0 }}</span>
+                  <span class="pill pill-{{ b.status|slugify }}">{{ b.status }}</span></span>
+              </div>
+              <div class="bar"><div class="bar-fill status-{{ b.status|slugify }}" style="width: {{ pct|floatformat:1 }}%"></div></div>
+              {% if b.projected %}<div class="bar-note">Projected {{ b.projected|money:0 }} by month end</div>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted">No budgets yet. Set one from the terminal, e.g. <code>rag budget set dining 400</code>.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Needs attention</h2></div>
+      <div hx-get="{% url 'attention' %}?month={{ month }}" hx-trigger="load">
+        <p class="muted"><span class="spinner"></span> Checking for price changes, duplicates and unusual charges…</p>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

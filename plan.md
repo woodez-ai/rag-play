@@ -241,6 +241,21 @@ charts remain open.
 
 ---
 
+## Phase 11 — Web UI (Django + HTMX)
+Local only (127.0.0.1, no login), a thin layer over the same `ragplay` functions as the CLI.
+`rag web` starts it; `--schema ragplay_sample` for synthetic data.
+- PR 1: foundation, Dashboard (tiles, trend chart, category and budget bars, needs attention),
+  Ask (chat with follow-ups, agent / SQL-only, "How I got this"), History (trace log).
+- PR 2: Spending (search + filters), Insights (subscriptions, duplicates, outliers, monthly
+  review), Budgets (edit in place).
+- PR 3: Categories (edit, review queue), Import (drag-and-drop PDFs → ingest, categorise, embed).
+
+Eval, `db migrate/check` and LlamaIndex stay in the CLI. See `notes/phase11-web.md`.
+
+✅ PR 1 done: 143 tests pass; end-to-end chat checked on sample data.
+
+---
+
 ## Design patterns covered (cheat sheet)
 | Category | Patterns |
 |---|---|

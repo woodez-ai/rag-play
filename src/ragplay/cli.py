@@ -344,6 +344,31 @@ def trace_cmd(last: int = typer.Option(15, "--last", "-n"),
     console.print(table)
 
 
+@app.command("web")
+def web_cmd(port: int = typer.Option(8000),
+            schema: str = typer.Option(db.SCHEMA, help="e.g. ragplay_sample for synthetic data."),
+            dev: bool = typer.Option(False, help="Debug pages and auto-reload on code changes."),
+            open_browser: bool = typer.Option(True, "--open/--no-open")) -> None:
+    """Web UI on http://127.0.0.1:PORT (this Mac only; no login). Needs the `web` extra."""
+    import os
+    import threading
+    import webbrowser
+    try:
+        import django
+        from django.core.management import call_command
+    except ImportError:
+        console.print("[red]Django is not installed: activate the venv, then `uv pip install -e '.[web]'`[/]")
+        raise typer.Exit(1)
+    os.environ["DJANGO_SETTINGS_MODULE"] = "ragplay_web.settings"
+    os.environ["RAGPLAY_WEB_SCHEMA"] = schema
+    if dev:
+        os.environ["RAGPLAY_WEB_DEBUG"] = "1"
+    django.setup()
+    if open_browser and not os.environ.get("RUN_MAIN"):  # not again in the reloader's child
+        threading.Timer(1.5, webbrowser.open, (f"http://127.0.0.1:{port}/",)).start()
+    call_command("runserver", f"127.0.0.1:{port}", use_reloader=dev, use_threading=True)
+
+
 @app.command("li-index")
 def li_index_cmd(schema: str = typer.Option(db.SCHEMA)) -> None:
     """Phase 9: (re)build the LlamaIndex PGVectorStore index (schema ragplay_li)."""

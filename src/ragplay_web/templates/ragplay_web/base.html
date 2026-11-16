@@ -1,0 +1,38 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
+  <title>{% block title %}ragplay{% endblock %} · ragplay</title>
+  <link rel="stylesheet" href="{% static 'ragplay_web/app.css' %}">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Crect x='6' y='10' width='20' height='13' rx='3' fill='none' stroke='white' stroke-width='2.5'/%3E%3Cpath d='M6 15h20' stroke='white' stroke-width='2.5'/%3E%3C/svg%3E">
+  <script src="{% static 'vendor/htmx.min.js' %}" defer></script>
+  <script src="{% static 'vendor/chart.umd.min.js' %}" defer></script>
+  <script src="{% static 'ragplay_web/app.js' %}" defer></script>
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="{% url 'dashboard' %}"><span class="logo"></span>ragplay</a>
+    <nav>
+      {% for name, text in nav %}
+        <a href="{% url name %}" class="{% if request.resolver_match.url_name == name %}active{% endif %}">
+          <span class="icon icon-{{ name }}"></span>{{ text }}</a>
+      {% endfor %}
+    </nav>
+    <div class="sidebar-foot">
+      {% if not is_real %}<div class="badge badge-warn" title="Synthetic data">schema: {{ schema }}</div>{% endif %}
+      <div hx-get="{% url 'health' %}" hx-trigger="load, every 60s" class="health"><span class="dot"></span>checking…</div>
+    </div>
+  </aside>
+  <main class="content">
+    <header class="page-head">
+      <h1>{% block heading %}{% endblock %}</h1>
+      <div class="page-actions">{% block actions %}{% endblock %}</div>
+    </header>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

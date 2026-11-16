@@ -1,0 +1,44 @@
+{% extends "ragplay_web/base.html" %}
+{% block title %}Ask{% endblock %}
+{% block heading %}Ask about your spending{% endblock %}
+{% block actions %}
+  {% if chat %}
+  <form method="post" action="{% url 'ask_new' %}">{% csrf_token %}
+    <button class="btn btn-ghost">＋ New chat</button>
+  </form>
+  {% endif %}
+{% endblock %}
+{% block content %}
+<div class="chat">
+  <div id="conversation" class="conversation">
+    {% for t in chat %}{% include "ragplay_web/_turn.html" %}{% endfor %}
+  </div>
+
+  {% if not chat %}
+  <div class="starters" id="starters">
+    <p class="muted">Ask anything about your statements. Follow-ups like “and in April?” work too. Try:</p>
+    <div class="chips">
+      {% for s in starters %}<button type="button" class="chip" data-question="{{ s }}">{{ s }}</button>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <form id="chat-form" class="composer" method="post" action="{% url 'ask_send' %}"
+        hx-post="{% url 'ask_send' %}" hx-target="#conversation" hx-swap="beforeend"
+        hx-indicator="#thinking" hx-disabled-elt="find button[type=submit], find textarea">
+    {% csrf_token %}
+    <textarea name="q" rows="1" placeholder="e.g. How much did I spend on dining in March?" maxlength="500"
+              required autofocus aria-label="Your question"></textarea>
+    <div class="composer-row">
+      <div class="segmented" role="radiogroup" aria-label="Mode">
+        <label title="The agent picks the right tool: SQL totals, search, subscriptions, budgets…">
+          <input type="radio" name="mode" value="agent" checked><span>Agent</span></label>
+        <label title="Text-to-SQL only (no follow-up context)">
+          <input type="radio" name="mode" value="sql"><span>SQL only</span></label>
+      </div>
+      <span id="thinking" class="thinking"><span class="spinner"></span> Thinking… this can take up to a minute</span>
+      <button type="submit" class="btn btn-primary">Ask</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
