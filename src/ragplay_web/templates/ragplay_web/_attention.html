@@ -1,6 +1,6 @@
 {% if items %}
 <ul class="alerts">
-  {% for kind, text in items %}<li class="alert alert-{{ kind }}"><span class="alert-dot"></span>{{ text }}</li>{% endfor %}
+  {% for kind, text, link in items %}<li class="alert alert-{{ kind }}"><span class="alert-dot"></span><a class="plain" href="{{ link }}">{{ text }}</a></li>{% endfor %}
 </ul>
 {% else %}
 <p class="ok-line">✓ Nothing unusual this month.</p>

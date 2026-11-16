@@ -280,6 +280,8 @@ def monthly_review(conn: psycopg.Connection, month: str | None = None) -> dict:
         "month": month,
         "total_spend": total,
         "previous_3_months_average": avg3,
+        # given, so the LLM never subtracts (it did, and the faithfulness check flagged it)
+        "difference_from_average": None if avg3 is None else total - avg3,
         "category_changes_vs_3_month_average": [
             {"category": c, "this_month": a, "usual": u, "difference": d} for c, a, u, d in cats],
         "new_merchants": [{"merchant": m, "first_charge": d, "spent": a} for m, d, a in new_merchants[:8]],

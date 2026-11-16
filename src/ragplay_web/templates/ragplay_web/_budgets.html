@@ -1,0 +1,64 @@
+{% load ragfmt %}
+<div id="budgets">
+  <div class="budgets-head">
+    <form method="get" action="{% url 'budgets' %}" class="month-picker">
+      <select name="month" data-autosubmit aria-label="Month">
+        {% for m in months %}<option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m|month_name }}</option>{% endfor %}
+      </select>
+    </form>
+    <p class="muted small">Monthly limits, checked in code against purchases and refunds. If the data stops mid-month, the projection is a straight line to month end.</p>
+  </div>
+
+  {% if error %}<div class="notice notice-bad" role="alert">{{ error|capfirst }}</div>{% endif %}
+
+  <div class="budget-grid">
+    {% for b, pct in items %}
+    <section class="card budget-card">
+      <div class="budget-top">
+        <h2>{% if b.category == "all" %}Total spending{% else %}{{ b.category|label }}{% endif %}</h2>
+        <span class="pill pill-{{ b.status|slugify }}">{{ b.status }}</span>
+      </div>
+      <div class="budget-amounts">
+        <span class="tile-value num">{{ b.spent|money:0 }}</span>
+        <span class="muted">of {{ b.budget|money:0 }} · {{ b.pct_used|floatformat:0 }}%</span>
+      </div>
+      <div class="bar bar-lg"><div class="bar-fill status-{{ b.status|slugify }}" style="width: {{ pct|floatformat:1 }}%"></div></div>
+      <div class="budget-foot muted small">
+        {% if b.remaining >= 0 %}{{ b.remaining|money }} left{% else %}{{ b.remaining|money|slice:"1:" }} over{% endif %}
+        {% if b.projected %} · projected {{ b.projected|money:0 }} (data through {{ b.data_through|date:"M j" }}){% endif %}
+      </div>
+      <div class="budget-actions">
+        <form class="inline-form" method="post" action="{% url 'budget_set' %}"
+              hx-post="{% url 'budget_set' %}" hx-target="#budgets" hx-swap="outerHTML">
+          {% csrf_token %}<input type="hidden" name="category" value="{{ b.category }}"><input type="hidden" name="month" value="{{ month }}">
+          <label class="sr-only" for="amt-{{ b.category }}">Monthly amount</label>
+          <span class="money-input">$<input id="amt-{{ b.category }}" name="amount" inputmode="decimal" value="{{ b.budget|floatformat:0 }}" required></span>
+          <button class="btn">Save</button>
+        </form>
+        <form method="post" action="{% url 'budget_remove' %}" hx-post="{% url 'budget_remove' %}" hx-target="#budgets"
+              hx-swap="outerHTML" hx-confirm="Remove the {{ b.category|label }} budget?">
+          {% csrf_token %}<input type="hidden" name="category" value="{{ b.category }}"><input type="hidden" name="month" value="{{ month }}">
+          <button class="btn btn-ghost btn-danger" title="Remove budget">Remove</button>
+        </form>
+      </div>
+    </section>
+    {% endfor %}
+
+    {% if addable %}
+    <section class="card budget-card budget-add">
+      <h2>Add a budget</h2>
+      <form method="post" action="{% url 'budget_set' %}" hx-post="{% url 'budget_set' %}" hx-target="#budgets" hx-swap="outerHTML"
+            class="add-form">
+        {% csrf_token %}<input type="hidden" name="month" value="{{ month }}">
+        <label>Category
+          <select name="category">
+            {% for c in addable %}<option value="{{ c }}">{% if c == "all" %}Total spending (all){% else %}{{ c|label }}{% endif %}</option>{% endfor %}
+          </select></label>
+        <label>Per month
+          <span class="money-input">$<input name="amount" inputmode="decimal" placeholder="400" required></span></label>
+        <button class="btn btn-primary">Add budget</button>
+      </form>
+    </section>
+    {% endif %}
+  </div>
+</div>

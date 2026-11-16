@@ -1,4 +1,4 @@
-{% extends "ragplay_web/base.html" %}
+{% extends "ragplay_web/base.html" %}{% load ragfmt %}
 {% block title %}History{% endblock %}
 {% block heading %}Question history{% endblock %}
 {% block content %}
@@ -21,7 +21,7 @@
     </summary>
     <div class="h-body">
       {% if e.standalone != e.question %}<div class="understood">Understood as: {{ e.standalone }}</div>{% endif %}
-      <div class="answer">{{ e.answer|linebreaksbr }}</div>
+      <div class="answer">{{ e.answer|md }}</div>
       {% include "ragplay_web/_steps.html" with steps=e.steps %}
     </div>
   </details>
