@@ -40,6 +40,7 @@ def test_rules_before_llm():
 @pytest.mark.parametrize("raw, merchant, category", [
     ("AMAZON.CA PRIME MEMBER AMAZON.CA/PRIBC", "Amazon Prime", "subscriptions"),
     ("AMAZON WEB SERVICES WWW.AMAZON.CAON", "Amazon Web Services", "subscriptions"),
+    ("AMAZON CHANNELS AMAZON.CA", "Amazon Channels", "subscriptions"),
     ("AMAZON.CA*5O8AV7I81 866-216-1072 ON", "Amazon", "shopping"),
     ("AMZN MKTP CA WWW.AMAZON.CAON", "Amazon", "shopping"),
 ])

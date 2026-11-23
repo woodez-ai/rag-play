@@ -69,6 +69,7 @@ def merchant_key(raw: str) -> str:
 RULES = [
     (r"^AMAZON WEB SERVICES|^AWS\b", "Amazon Web Services", "subscriptions", "cloud computing and web hosting"),
     (r"^AMAZON\S* PRIME", "Amazon Prime", "subscriptions", "Amazon Prime membership"),
+    (r"^AMAZON CHANNELS", "Amazon Channels", "subscriptions", "Prime Video add-on streaming channels"),
     (r"^AMAZON|^AMZN", "Amazon", "shopping", "online retailer selling almost everything"),
     (r"^NETFLIX", "Netflix", "subscriptions", "video streaming subscription"),
     (r"^SPOTIFY", "Spotify", "subscriptions", "music streaming subscription"),
