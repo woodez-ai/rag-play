@@ -37,6 +37,17 @@ def test_rules_before_llm():
     assert categorize.rule_classify("LUIGI'S TRATTORIA") is None
 
 
+@pytest.mark.parametrize("raw, merchant, category", [
+    ("AMAZON.CA PRIME MEMBER AMAZON.CA/PRIBC", "Amazon Prime", "subscriptions"),
+    ("AMAZON WEB SERVICES WWW.AMAZON.CAON", "Amazon Web Services", "subscriptions"),
+    ("AMAZON.CA*5O8AV7I81 866-216-1072 ON", "Amazon", "shopping"),
+    ("AMZN MKTP CA WWW.AMAZON.CAON", "Amazon", "shopping"),
+])
+def test_amazon_rules(raw, merchant, category):
+    c = categorize.rule_classify(merchant_key(raw))
+    assert (c.merchant, c.category) == (merchant, category)
+
+
 @pytest.fixture
 def conn(tmp_path, monkeypatch):
     subprocess.run([sys.executable, ROOT / "scripts/make_fake_statements.py", "--months", "1",
@@ -85,6 +96,17 @@ def test_manual_wins(conn):
                         (name,)).fetchone() == ("travel", "manual")
     cats = conn.execute("SELECT DISTINCT category FROM transactions WHERE merchant = %s", (name,)).fetchall()
     assert cats == [("travel",)]
+
+
+def test_changed_rule_reroutes_cached_keys(conn, monkeypatch):
+    categorize.categorize(conn)
+    key = conn.execute("SELECT merchant_key FROM merchant_aliases WHERE merchant = 'Netflix' LIMIT 1").fetchone()[0]
+    monkeypatch.setattr(categorize, "RULES", [(r"^NETFLIX", "Netflix Video", "entertainment", "streaming")]
+                        + categorize.RULES)
+    st = categorize.categorize(conn)
+    assert st.rule == 1 and st.llm == 0
+    assert conn.execute("SELECT DISTINCT merchant, category FROM transactions WHERE merchant_key = %s",
+                        (key,)).fetchall() == [("Netflix Video", "entertainment")]
 
 
 def test_set_category_rejects_unknown(conn):
