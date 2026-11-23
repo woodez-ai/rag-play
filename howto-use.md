@@ -93,8 +93,10 @@ Search and browse transactions.
 
 - **Search box:** finds by meaning ("coffee", "flights", "hardware store") and shows the top 50
   matches ranked by relevance.
-- **Filters:** category, merchant, date range and min/max amount. Use them on their own for an
-  exact list: newest first, 50 per page, with a total.
+- **Filters:** category, card, merchant, date range and min/max amount. Use them on their own
+  for an exact list: newest first, 50 per page, with a total. **Card** (shown when you have more
+  than one card account) picks one account, e.g. the Mastercard or the Visa, including every
+  cardholder on it.
 - Click a merchant or category in the table to see all of its transactions. **Clear** resets.
 
 ### Insights

@@ -17,6 +17,11 @@
         <option value="">All</option>
         {% for c in categories %}<option value="{{ c }}" {% if c == f.category %}selected{% endif %}>{{ c|label }}</option>{% endfor %}
       </select></label>
+    {% if cards|length > 1 %}<label>Card
+      <select name="card">
+        <option value="">All</option>
+        {% for last4, name in cards %}<option value="{{ last4 }}" {% if last4 == f.card %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select></label>{% endif %}
     <label>Merchant <input name="merchant" value="{{ f.merchant }}" placeholder="any"></label>
     <label>From <input type="date" name="from" value="{{ f.from|date:'Y-m-d' }}"></label>
     <label>To <input type="date" name="to" value="{{ f.to|date:'Y-m-d' }}"></label>
