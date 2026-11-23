@@ -199,14 +199,17 @@ def spending(request: HttpRequest) -> HttpResponse:
     g = request.GET
     f = {"q": g.get("q", "").strip()[:200], "merchant": g.get("merchant", "").strip()[:100],
          "category": g.get("category", ""), "from": _date(g.get("from")), "to": _date(g.get("to")),
-         "min": _money(g.get("min")), "max": _money(g.get("max"))}
+         "min": _money(g.get("min")), "max": _money(g.get("max")), "card": g.get("card", "")}
     with reader() as conn:
         cats = stats.categories(conn)
         if f["category"] not in cats:
             f["category"] = ""
+        cards = stats.accounts(conn)
+        if f["card"] not in dict(cards):
+            f["card"] = ""
         hits = store.find(conn, text=f["q"] or None, merchant=f["merchant"] or None,
                           category=f["category"] or None, date_from=f["from"], date_to=f["to"],
-                          min_amount=f["min"], max_amount=f["max"],
+                          min_amount=f["min"], max_amount=f["max"], account=f["card"] or None,
                           k=SEARCH_TOP if f["q"] else FIND_LIMIT)
     try:
         page = max(1, int(g.get("page", 1)))
@@ -217,7 +220,7 @@ def spending(request: HttpRequest) -> HttpResponse:
     query = g.copy()
     query.pop("page", None)
     return render(request, "ragplay_web/spending.html", {
-        "f": f, "categories": cats, "rows": hits[(page - 1) * PAGE_SIZE: page * PAGE_SIZE],
+        "f": f, "categories": cats, "cards": cards, "rows": hits[(page - 1) * PAGE_SIZE: page * PAGE_SIZE],
         "count": len(hits), "total": sum((h.amount for h in hits), Decimal(0)),
         "ranked": bool(f["q"]), "capped": not f["q"] and len(hits) == FIND_LIMIT,
         "page": page, "pages": pages, "query": query.urlencode(),

@@ -162,6 +162,16 @@ def test_spending_filters_match_ground_truth(data, client):
     assert not r.context["ranked"]
 
 
+def test_spending_card_filter(data, client):
+    c, _ = data
+    last4 = stats.accounts(c)[0][0]
+    everything = client.get("/spending").context["count"]
+    assert client.get(f"/spending?card={last4}").context["count"] == everything  # one account in the fake data
+    assert store.find(c, account="0000") == []  # an account with no statements matches nothing
+    r = client.get("/spending?card=0000")  # unknown card in the URL is ignored, not an error
+    assert r.context["f"]["card"] == "" and r.context["count"] == everything
+
+
 def test_spending_paginates_newest_first(data, client):
     r = client.get("/spending")
     rows = r.context["rows"]

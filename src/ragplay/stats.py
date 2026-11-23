@@ -75,6 +75,12 @@ def categories(conn: psycopg.Connection) -> list[str]:
         "SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL ORDER BY 1")]
 
 
+def accounts(conn: psycopg.Connection) -> list[tuple[str, str]]:
+    """(card_last4, label) per card account that has statements, e.g. ("9369", "Mastercard ...9369")."""
+    return [(last4, f"{issuer} ...{last4}") for last4, issuer in conn.execute(
+        """SELECT card_last4, max(issuer) FROM statements GROUP BY 1 ORDER BY 2, 1""")]
+
+
 def statements(conn: psycopg.Connection) -> list[tuple]:
     """(issuer, card_last4, period_start, period_end, closing_balance, txns, source_file, ingested_at),
     newest period first."""
