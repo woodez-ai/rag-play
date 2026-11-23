@@ -1,6 +1,10 @@
-"""Statement PDF -> parse -> reconcile -> PostgreSQL, one DB transaction per statement.
+"""Statement (a PDF, or page images) -> parse -> reconcile -> PostgreSQL, one DB transaction per
+statement.
 
-- Idempotent: keyed on the file's SHA-256 (statements.file_hash is UNIQUE). Re-running skips
+- Page images of one statement are named `<stem>-1.jpg`, `<stem>-2.jpg`, ... and are grouped
+  and read (OCR, on-device) in page order.
+
+- Idempotent: keyed on the SHA-256 of the file (all pages, in order, for images) (statements.file_hash is UNIQUE). Re-running skips
   files already loaded.
 - Fails loudly: a statement that doesn't reconcile to the cent is not inserted at all.
 - Only the file name is stored, never its full path. Card numbers are reduced to the last 4
@@ -8,11 +12,13 @@
 """
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import psycopg
 
+from ragplay.extract import IMAGE_SUFFIXES
 from ragplay.parsers import ParsedStatement, parse_file
 from ragplay.validate import reconcile
 
@@ -25,8 +31,23 @@ class Result:
     errors: list[str] = field(default_factory=list)
 
 
-def file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+PAGE_RE = re.compile(r"^(.*?)[-_ ]*(\d+)$")  # "mc-bill-Oct2026-3" -> ("mc-bill-Oct2026", "3")
+
+
+def file_hash(path: Path | list[Path]) -> str:
+    h = hashlib.sha256()
+    for p in path if isinstance(path, list) else [path]:
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def statement_name(paths: list[Path]) -> str:
+    """The name stored in statements.source_file: the file, or `<stem>-1..4.jpg` for pages."""
+    if len(paths) == 1:
+        return paths[0].name
+    m = PAGE_RE.match(paths[0].stem)
+    stem = m[1] if m else paths[0].stem
+    return f"{stem}-1..{len(paths)}{paths[0].suffix}"
 
 
 def insert_statement(conn: psycopg.Connection, s: ParsedStatement, source_file: str,
@@ -50,28 +71,45 @@ def insert_statement(conn: psycopg.Connection, s: ParsedStatement, source_file: 
     return sid
 
 
-def ingest_file(conn: psycopg.Connection | None, path: Path) -> Result:
-    """Ingest one PDF. conn=None is a dry run (parse + reconcile only)."""
-    digest = file_hash(path)
+def ingest_file(conn: psycopg.Connection | None, path: Path | list[Path]) -> Result:
+    """Ingest one statement: a PDF, or its page images in order. conn=None is a dry run
+    (parse + reconcile only)."""
+    paths = path if isinstance(path, list) else [path]
+    name = statement_name(paths)
+    digest = file_hash(paths)
     if conn is not None and conn.execute(
             "SELECT 1 FROM statements WHERE file_hash = %s", (digest,)).fetchone():
-        return Result(path.name, "skipped")
+        return Result(name, "skipped")
     try:
-        s = parse_file(path)
+        s = parse_file(paths)
     except ValueError as e:
-        return Result(path.name, "failed", errors=[f"parse: {e}"])
+        return Result(name, "failed", errors=[f"parse: {e}"])
     errors = reconcile(s)
     if errors:
-        return Result(path.name, "failed", len(s.transactions), errors)
+        return Result(name, "failed", len(s.transactions), errors)
     if conn is None:
-        return Result(path.name, "dry-run", len(s.transactions))
+        return Result(name, "dry-run", len(s.transactions))
     with conn.transaction():  # statement + all its rows, or nothing
-        insert_statement(conn, s, path.name, digest)
-    return Result(path.name, "loaded", len(s.transactions))
+        insert_statement(conn, s, name, digest)
+    return Result(name, "loaded", len(s.transactions))
 
 
-def pdf_paths(paths: list[Path]) -> list[Path]:
-    out: list[Path] = []
+def statement_files(paths: list[Path]) -> list[Path | list[Path]]:
+    """Expand folders, then group page images into statements: `<stem>-<n>.jpg` files that
+    share a stem are one statement, in page-number order. PDFs are one statement each."""
+    files: list[Path] = []
     for p in paths:
-        out += sorted(p.glob("*.pdf")) if p.is_dir() else [p]
+        files += sorted(f for f in p.iterdir() if f.suffix.lower() in {".pdf", *IMAGE_SUFFIXES}) \
+            if p.is_dir() else [p]
+    out: list[Path | list[Path]] = []
+    pages: dict[tuple[Path, str], list[tuple[int, Path]]] = {}
+    for f in files:
+        m = PAGE_RE.match(f.stem)
+        if f.suffix.lower() in IMAGE_SUFFIXES and m:
+            pages.setdefault((f.parent, m[1]), []).append((int(m[2]), f))
+        elif f.suffix.lower() in IMAGE_SUFFIXES:
+            out.append([f])
+        else:
+            out.append(f)
+    out += [[f for _, f in sorted(group)] for group in pages.values()]
     return out

@@ -76,16 +76,22 @@ def classify(description: str, amount: Decimal) -> str:
     return "purchase"
 
 
-def parse_file(path: str | Path) -> ParsedStatement:
-    """Pick the parser whose detect() matches page 1 and run it."""
-    from ragplay.parsers import acme, visa
+def parse_file(path: str | Path | list[Path]) -> ParsedStatement:
+    """Pick the parser whose detect() matches page 1 and run it. `path` is one PDF, or the
+    page images of one statement in page order (OCR)."""
+    from ragplay.extract import IMAGE_SUFFIXES, read_image
+    from ragplay.parsers import acme, mastercard, visa
 
-    pages = read_pages(path)
+    paths = [Path(p) for p in path] if isinstance(path, list) else [Path(path)]
+    if paths[0].suffix.lower() in IMAGE_SUFFIXES:
+        pages = [read_image(p) for p in paths]
+    else:
+        pages = read_pages(paths[0])
     first = " ".join(w.text for w in pages[0]) if pages else ""
-    for mod in (acme, visa):
+    for mod in (acme, visa, mastercard):
         if mod.detect(first):
             return mod.parse(pages)
-    raise ParseError(f"no parser recognises {Path(path).name}")
+    raise ParseError(f"no parser recognises {paths[0].name}")
 
 
 __all__ = ["ParsedStatement", "ParsedTxn", "ParseError", "Word", "parse_file"]

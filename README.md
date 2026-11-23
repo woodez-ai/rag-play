@@ -20,7 +20,7 @@ pgvector. No statement data leaves your network.
 ## Design
 
 ```
- PDF statements ──► parse + reconcile to the cent ──► PostgreSQL (statements, transactions)
+ PDF statements / page photos (OCR) ──► parse + reconcile to the cent ──► PostgreSQL (statements, transactions)
                                                         │
                     merchant clean-up + categories ◄────┤  rules → LLM (cached; your fixes win)
                     embeddings (pgvector)          ◄────┘  "merchant: description" text
@@ -80,7 +80,8 @@ pdfplumber · Typer · Django + HTMX.
    ```
 
 Statement parsers live in `src/ragplay/parsers/`. A bank with a different PDF layout needs its
-own parser. To try it without real statements, run `rag eval --set sample` once. This loads
+own parser. Photographed statements (page images, e.g. the Mastercard parser) are read with
+on-device OCR (Apple Vision), so they need macOS and the `ocr` extra: `uv sync --extra ocr`. To try it without real statements, run `rag eval --set sample` once. This loads
 synthetic statements into the `ragplay_sample` schema. Then run `rag web --schema ragplay_sample`.
 
 ## Usage

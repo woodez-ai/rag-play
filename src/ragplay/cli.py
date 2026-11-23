@@ -34,12 +34,14 @@ def db_check() -> None:
 
 @app.command("ingest")
 def ingest_cmd(
-    paths: list[Path] = typer.Argument(..., help="Statement PDFs or folders of them."),
+    paths: list[Path] = typer.Argument(
+        ..., help="Statement PDFs, page images (<stem>-1.jpg, <stem>-2.jpg, ... = one statement; "
+                  "OCR on macOS needs the 'ocr' extra), or folders of them."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and reconcile only."),
     schema: str = typer.Option(db.SCHEMA, help="Target schema (ragplay_test for synthetic)."),
 ) -> None:
     """Parse, reconcile and load statements. Each statement loads all-or-nothing."""
-    files = ingest.pdf_paths(paths)
+    files = ingest.statement_files(paths)
     conn = None if dry_run else db.connect_owner(schema)
     if conn is not None:
         conn.autocommit = True  # each statement is its own conn.transaction()
