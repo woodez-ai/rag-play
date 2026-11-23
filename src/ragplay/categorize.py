@@ -64,8 +64,12 @@ def merchant_key(raw: str) -> str:
 
 
 # (key regex, clean name, category, description). Deliberately short: rules handle the
-# unambiguous high-volume names, the LLM the long tail.
+# unambiguous high-volume names, the LLM the long tail. First match wins, so the specific
+# Amazon services come before the catch-all Amazon shopping rule.
 RULES = [
+    (r"^AMAZON WEB SERVICES|^AWS\b", "Amazon Web Services", "subscriptions", "cloud computing and web hosting"),
+    (r"^AMAZON\S* PRIME", "Amazon Prime", "subscriptions", "Amazon Prime membership"),
+    (r"^AMAZON CHANNELS", "Amazon Channels", "subscriptions", "Prime Video add-on streaming channels"),
     (r"^AMAZON|^AMZN", "Amazon", "shopping", "online retailer selling almost everything"),
     (r"^NETFLIX", "Netflix", "subscriptions", "video streaming subscription"),
     (r"^SPOTIFY", "Spotify", "subscriptions", "music streaming subscription"),
@@ -212,8 +216,16 @@ def categorize(conn: psycopg.Connection, model: str = MODEL, progress=None) -> S
             updates.append((k, tid))
         cur.executemany("UPDATE transactions SET merchant_key = %s WHERE id = %s", updates)
     st.keys = len(keys)
-    done = {r[0] for r in conn.execute("SELECT merchant_key FROM merchant_aliases")}
-    todo = [k for k in sorted(keys) if k not in done]
+    done = {k: (m, s) for k, m, s in conn.execute("SELECT merchant_key, merchant, source FROM merchant_aliases")}
+
+    def needs_work(k: str) -> bool:
+        # New keys, plus cached non-manual keys that a (new or changed) rule now maps elsewhere.
+        if k not in done:
+            return True
+        r = rule_classify(k)
+        return done[k][1] != "manual" and r is not None and r.merchant != done[k][0]
+
+    todo = [k for k in sorted(keys) if needs_work(k)]
     st.cached = st.keys - len(todo)
     for i, k in enumerate(todo, 1):
         c = rule_classify(k)
