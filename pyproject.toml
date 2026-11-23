@@ -30,6 +30,9 @@ llamaindex = [
 web = [
     "django>=6.0",
 ]
+ocr = [
+    "pyobjc-framework-vision>=11 ; sys_platform == 'darwin'",
+]
 
 [build-system]
 requires = ["hatchling"]

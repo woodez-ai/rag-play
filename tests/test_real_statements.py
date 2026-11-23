@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ragplay import ingest
 from ragplay.parsers import ParseError, parse_file
 from ragplay.validate import reconcile
 
@@ -22,6 +23,22 @@ def test_every_real_statement_reconciles():
                 failed.append(p.name)
         except ParseError:
             failed.append(p.name)
+    assert not failed, f"do not reconcile: {failed}"
+
+
+def test_photographed_statements_reconcile():
+    """Page-image statements (OCR) in cc_statements/, grouped as `rag ingest` groups them."""
+    pytest.importorskip("Vision", reason="OCR needs macOS and the 'ocr' extra")
+    groups = [g for g in ingest.statement_files([REAL[0].parent]) if isinstance(g, list)]
+    if not groups:
+        pytest.skip("no page-image statements in cc_statements/")
+    failed = []
+    for pages in groups:
+        try:
+            if reconcile(parse_file(pages)):
+                failed.append(ingest.statement_name(pages))
+        except ParseError:
+            failed.append(ingest.statement_name(pages))
     assert not failed, f"do not reconcile: {failed}"
 
 

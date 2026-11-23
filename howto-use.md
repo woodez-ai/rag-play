@@ -164,8 +164,18 @@ Run `rag --help`, or `rag <command> --help`, for the full options. Most commands
 ### Load statements
 
 ```bash
-rag ingest cc_statements/               # a folder or individual PDFs; already-loaded files are skipped
+rag ingest cc_statements/               # a folder or individual files; already-loaded statements are skipped
 rag ingest new.pdf --dry-run            # parse and reconcile only, load nothing
+rag ingest mc-bill-Nov2026-*.jpg        # a photographed statement: one image per page
+```
+
+A photographed statement is read with on-device OCR (macOS, `ocr` extra: `uv sync --extra ocr`).
+Name its pages `<name>-1.jpg`, `<name>-2.jpg`, ... and they load as one statement, in page
+order. Take each photo straight on, with the whole page in frame and flat: a statement that
+doesn't reconcile to the cent (for example a misread amount) is refused, never loaded. The web
+Import page takes PDFs only.
+
+```bash
 rag categorize                          # categorise new merchants (rules first, then the model)
 rag embed                               # make new transactions searchable by meaning
 ```

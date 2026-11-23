@@ -6,12 +6,16 @@ numbers and amounts never appear, but column positions, date/amount formats, sig
 markers do. That is enough to write a parser.
 
 Usage: python scripts/layout_dump.py "cc_statements/Visa Statement-2423 2026-10-21.pdf" [--pages 1-3]
+       python scripts/layout_dump.py cc_statements/mc-bill-Oct2026-*.jpg   (page images, OCR)
 """
 
 import argparse
 import re
+from pathlib import Path
 
 import pdfplumber
+
+from ragplay.extract import IMAGE_SUFFIXES, group_lines, read_image
 
 ALLOW = {
     w.lower()
@@ -21,7 +25,7 @@ ALLOW = {
     debit debits description detail details due end ending fee fees from interest last limit
     minimum new number of opening other page past payment payments percentage period post posted
     posting previous purchase purchases rate reference start statement summary total totals
-    transaction transactions trans transfer transfers visa your and the to for on in at by
+    transaction transactions trans transfer transfers visa mastercard your and the to for on in at by
     jan feb mar apr may jun jul aug sep oct nov dec
     january february march april june july august september october november december
     """.split()
@@ -44,10 +48,17 @@ def page_range(spec: str | None, n: int) -> list[int]:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("pdf")
+    ap.add_argument("pdf", nargs="+", help="a PDF, or one or more page images (OCR, macOS)")
     ap.add_argument("--pages")
     args = ap.parse_args()
-    with pdfplumber.open(args.pdf) as pdf:
+    if Path(args.pdf[0]).suffix.lower() in IMAGE_SUFFIXES:
+        for i, img in enumerate(args.pdf, 1):
+            words = read_image(img)
+            print(f"\n=== page {i} (OCR) height={max((w.top for w in words), default=0):.0f} ===")
+            for ln in group_lines(words, i, y_tol=4.0):
+                print(f"y{ln.top:4.0f} " + "  ".join(f"[{w.x0:.0f}]{shape(w.text)}" for w in ln.words))
+        return
+    with pdfplumber.open(args.pdf[0]) as pdf:
         print(f"pages={len(pdf.pages)} size={pdf.pages[0].width:.0f}x{pdf.pages[0].height:.0f}")
         for i in page_range(args.pages, len(pdf.pages)):
             page = pdf.pages[i]
